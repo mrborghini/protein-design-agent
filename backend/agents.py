@@ -65,7 +65,7 @@ def _model_info(vision: bool = False) -> ModelInfo:
 DEFAULT_AGENTS: list[dict] = [
     {
         "name": "LiteratureAgent",
-        "model": "qwen3.5:9b",
+        "model": "qwen3.5:latest",
         "with_research": True,
         "system_message": (
             "You extract key facts about protein design from the provided document "
@@ -77,7 +77,7 @@ DEFAULT_AGENTS: list[dict] = [
     },
     {
         "name": "HypothesisAgent",
-        "model": "gemma4:12b",
+        "model": "gemma4:latest",
         "with_research": False,
         "system_message": "You generate actionable, testable hypotheses for protein design.",
     },

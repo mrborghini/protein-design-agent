@@ -7,11 +7,12 @@ import { streamChat, AgentConfig } from "./lib/sse";
 import { useDarkMode } from "./lib/theme";
 import { downloadJSON, downloadText, formatTokens } from "./lib/download";
 
-const FALLBACK = { numCtx: 32768, ctxMin: 512, ctxMax: 262144, maxTurns: 6, turnsMin: 1, turnsMax: 20 };
+const FALLBACK = { numCtx: 32768, ctxMin: 512, ctxMax: 262144, maxTurns: 20, turnsMin: 1, turnsMax: 100 };
 const ROSTER_KEY = "pda-roster";
 const TURNS_KEY = "pda-maxturns";
 const CTX_KEY = "pda-numctx";
-const CONV_KEY = "pda-conversation";
+const NOLIMIT_KEY = "pda-nolimit";
+const POLL_MS = 2000;
 
 type Usage = Record<string, { prompt: number; completion: number }>;
 
@@ -48,14 +49,9 @@ function conversationToMarkdown(items: ChatItem[]): string {
 }
 
 export default function App() {
-  const [items, setItems] = useState<ChatItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(CONV_KEY);
-      return saved ? (JSON.parse(saved) as ChatItem[]) : [];
-    } catch {
-      return [];
-    }
-  });
+  // The conversation lives on the backend (shared across all sessions); we never
+  // persist it locally — it is fetched/polled from /api/conversation.
+  const [items, setItems] = useState<ChatItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [pdfName, setPdfName] = useState("");
@@ -65,7 +61,12 @@ export default function App() {
   const [numCtx, setNumCtx] = useState(() => Number(localStorage.getItem(CTX_KEY)) || FALLBACK.numCtx);
   const [ctxBounds, setCtxBounds] = useState({ min: FALLBACK.ctxMin, max: FALLBACK.ctxMax });
   const [maxTurns, setMaxTurns] = useState(() => Number(localStorage.getItem(TURNS_KEY)) || FALLBACK.maxTurns);
+  const [noLimit, setNoLimit] = useState(() => localStorage.getItem(NOLIMIT_KEY) === "1");
   const [turnsBounds, setTurnsBounds] = useState({ min: FALLBACK.turnsMin, max: FALLBACK.turnsMax });
+  // True only while THIS client is actively streaming a debate it started; used to
+  // avoid clobbering the live token stream with the (finalized-only) poll snapshot.
+  const localStreamingRef = useRef(false);
+  const [streaming, setStreaming] = useState(false); // same flag, for rendering (Stop button)
 
   const [models, setModels] = useState<string[]>([]);
   const [caps, setCaps] = useState<ModelCaps>({});
@@ -120,8 +121,41 @@ export default function App() {
     localStorage.setItem(CTX_KEY, String(numCtx));
   }, [numCtx]);
   useEffect(() => {
-    localStorage.setItem(CONV_KEY, JSON.stringify(items));
-  }, [items]);
+    localStorage.setItem(NOLIMIT_KEY, noLimit ? "1" : "0");
+  }, [noLimit]);
+
+  // Poll the shared conversation so every session sees the one chat. Skip applying
+  // the snapshot while THIS client is streaming its own debate (it renders live).
+  useEffect(() => {
+    let alive = true;
+    async function poll() {
+      if (localStreamingRef.current) return;
+      try {
+        const r = await fetch("/api/conversation");
+        const snap = await r.json();
+        if (!alive || localStreamingRef.current) return;
+        setItems((snap.items ?? []) as ChatItem[]);
+        setBusy(!!snap.busy);
+        setStatus(snap.status ?? "");
+        setUsage(
+          Object.fromEntries(
+            Object.entries(snap.usage ?? {}).map(([k, v]: [string, any]) => [
+              k,
+              { prompt: v.prompt ?? 0, completion: v.completion ?? 0 },
+            ])
+          )
+        );
+      } catch {
+        /* ignore transient poll errors */
+      }
+    }
+    poll();
+    const id = setInterval(poll, POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
 
   function push(item: ChatItem) {
     setItems((prev) => [...prev, item]);
@@ -148,11 +182,18 @@ export default function App() {
     });
   }
 
-  // Reset the roster to the three default agents on the first 3 installed models.
-  function resetRoster() {
-    if (!defaults.length) return;
-    const next = defaults.map((d, i) => ({ ...d, model: models[i] ?? models[0] ?? d.model, num_ctx: numCtx }));
-    setRoster(next);
+  // Reset ALL settings (roster + context + turns + no-limit) to defaults, after a
+  // confirmation warning. Persisted overrides are removed. Does not touch the chat.
+  function resetSettings() {
+    if (!window.confirm("Reset all settings to defaults? This can't be undone.")) return;
+    if (defaults.length) {
+      const next = defaults.map((d, i) => ({ ...d, model: models[i] ?? models[0] ?? d.model, num_ctx: FALLBACK.numCtx }));
+      setRoster(next);
+    }
+    setNumCtx(FALLBACK.numCtx);
+    setMaxTurns(FALLBACK.maxTurns);
+    setNoLimit(false);
+    [ROSTER_KEY, CTX_KEY, TURNS_KEY, NOLIMIT_KEY].forEach((k) => localStorage.removeItem(k));
   }
 
   function exportConfig() {
@@ -176,13 +217,24 @@ export default function App() {
     }
   }
 
-  function clearConversation() {
+  async function clearConversation() {
+    try {
+      await fetch("/api/conversation/clear", { method: "POST" });
+    } catch {
+      /* ignore */
+    }
     setItems([]);
     setUsage({});
-    localStorage.removeItem(CONV_KEY);
+  }
+
+  function stopDebate() {
+    abortRef.current?.abort();
   }
 
   async function handleSend(text: string, images: string[]) {
+    // This client owns the live stream; suppress the poll snapshot meanwhile.
+    localStreamingRef.current = true;
+    setStreaming(true);
     push({ kind: "user", text, images: images.length ? images : undefined });
     setBusy(true);
     setStatus("Starting…");
@@ -193,7 +245,7 @@ export default function App() {
     try {
       await streamChat(
         text,
-        { numCtx, maxTurns, agents: roster, images },
+        { numCtx, maxTurns, unlimited: noLimit, agents: roster, images },
         (e) => {
           if (e.type === "status") {
             setStatus(e.text);
@@ -221,13 +273,18 @@ export default function App() {
         controller.signal
       );
     } catch (err) {
-      if (!(err instanceof DOMException && err.name === "AbortError")) {
-        push({ kind: "error", text: err instanceof Error ? err.message : "Request failed" });
+      if (err instanceof DOMException && err.name === "AbortError") {
+        // Stopped by the user — backend cancels the debate.
+      } else {
+        const msg = err instanceof Error ? err.message : "Request failed";
+        push({ kind: "error", text: /409/.test(msg) ? "A debate is already running." : msg });
       }
     } finally {
       setBusy(false);
       setStatus("");
       abortRef.current = null;
+      localStreamingRef.current = false;
+      setStreaming(false);
     }
   }
 
@@ -235,17 +292,17 @@ export default function App() {
   const totalAll = Object.values(usage).reduce((s, u) => s + u.prompt + u.completion, 0);
 
   return (
-    <div className="flex h-full text-slate-900 dark:text-slate-100">
-      <aside className="flex w-72 flex-col gap-4 overflow-y-auto border-r border-slate-200 bg-white px-4 py-6 dark:border-slate-700 dark:bg-slate-800">
+    <div className="flex h-full text-slate-900 dark:text-white">
+      <aside className="flex w-72 flex-col gap-4 overflow-y-auto border-r border-slate-200 bg-white px-4 py-6 dark:border-[#4a4a4a] dark:bg-[#3c3c3c]">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Protein Design Agent</h1>
-            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Local · Ollama · Playwright</p>
+            <h1 className="text-lg font-semibold text-slate-800 dark:text-white">Protein Design Agent</h1>
+            <p className="mt-1 text-xs text-slate-400 dark:text-[#9a9a9a]">Local · Ollama · Playwright</p>
           </div>
           <button
             onClick={toggleDark}
             title="Toggle dark mode"
-            className="rounded-lg border border-slate-200 px-2 py-1 text-sm dark:border-slate-600"
+            className="rounded-lg border border-slate-200 px-2 py-1 text-sm dark:border-[#4a4a4a]"
           >
             {dark ? "☀️" : "🌙"}
           </button>
@@ -262,27 +319,31 @@ export default function App() {
         />
 
         <div>
-          <label className="text-xs font-medium text-slate-500 dark:text-slate-400">Max debate turns</label>
+          <label className="text-xs font-medium text-slate-500 dark:text-[#b5b5b5]">Max debate turns</label>
           <input
             type="number"
             value={maxTurns}
             min={turnsBounds.min}
             max={turnsBounds.max}
-            disabled={busy}
+            disabled={busy || noLimit}
             onChange={(e) => setMaxTurns(Number(e.target.value))}
             onBlur={(e) =>
               setMaxTurns(Math.max(turnsBounds.min, Math.min(turnsBounds.max, Number(e.target.value) || turnsBounds.min)))
             }
-            className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+            className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 disabled:opacity-50 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white"
           />
-          <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+          <label className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-[#b5b5b5]">
+            <input type="checkbox" checked={noLimit} disabled={busy} onChange={(e) => setNoLimit(e.target.checked)} />
+            No limit (run until consensus or deadlock)
+          </label>
+          <p className="mt-1 text-[11px] text-slate-400 dark:text-[#9a9a9a]">
             1 turn = every agent speaks once. If they never agree, the Critic closes with why.
           </p>
         </div>
 
         <button
           onClick={() => setShowRoster(true)}
-          className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:border-slate-400 dark:border-slate-600 dark:text-slate-200"
+          className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:border-slate-400 dark:border-[#4a4a4a] dark:text-[#ededed]"
         >
           Configure agents ({roster.length})
         </button>
@@ -291,14 +352,14 @@ export default function App() {
           <button
             onClick={clearConversation}
             disabled={items.length === 0}
-            className="flex-1 rounded-lg border border-slate-300 px-2 py-1.5 text-xs text-slate-600 hover:border-slate-400 disabled:opacity-40 dark:border-slate-600 dark:text-slate-300"
+            className="flex-1 rounded-lg border border-slate-300 px-2 py-1.5 text-xs text-slate-600 hover:border-slate-400 disabled:opacity-40 dark:border-[#4a4a4a] dark:text-[#dcdcdc]"
           >
             Clear chat
           </button>
           <button
             onClick={() => downloadText("conversation.md", conversationToMarkdown(items), "text/markdown")}
             disabled={items.length === 0}
-            className="flex-1 rounded-lg border border-slate-300 px-2 py-1.5 text-xs text-slate-600 hover:border-slate-400 disabled:opacity-40 dark:border-slate-600 dark:text-slate-300"
+            className="flex-1 rounded-lg border border-slate-300 px-2 py-1.5 text-xs text-slate-600 hover:border-slate-400 disabled:opacity-40 dark:border-[#4a4a4a] dark:text-[#dcdcdc]"
           >
             Download chat
           </button>
@@ -307,19 +368,19 @@ export default function App() {
         {/* Token usage */}
         {Object.keys(usage).length > 0 && (
           <div className="text-xs">
-            <p className="font-medium text-slate-500 dark:text-slate-400">Tokens generated</p>
-            <div className="mt-1 space-y-0.5 text-slate-500 dark:text-slate-400">
+            <p className="font-medium text-slate-500 dark:text-[#b5b5b5]">Tokens generated</p>
+            <div className="mt-1 space-y-0.5 text-slate-500 dark:text-[#b5b5b5]">
               {Object.entries(usage).map(([agent, u]) => (
                 <p key={agent} className="flex justify-between">
                   <span className="truncate">{agent}</span>
-                  <span className="font-medium text-slate-700 dark:text-slate-200">{formatTokens(u.completion)}</span>
+                  <span className="font-medium text-slate-700 dark:text-[#ededed]">{formatTokens(u.completion)}</span>
                 </p>
               ))}
-              <p className="flex justify-between border-t border-slate-200 pt-0.5 dark:border-slate-700">
+              <p className="flex justify-between border-t border-slate-200 pt-0.5 dark:border-[#4a4a4a]">
                 <span>Total generated</span>
-                <span className="font-semibold text-slate-800 dark:text-slate-100">{formatTokens(totalGenerated)}</span>
+                <span className="font-semibold text-slate-800 dark:text-white">{formatTokens(totalGenerated)}</span>
               </p>
-              <p className="flex justify-between text-slate-400 dark:text-slate-500">
+              <p className="flex justify-between text-slate-400 dark:text-[#9a9a9a]">
                 <span>Total (incl. prompt)</span>
                 <span>{formatTokens(totalAll)}</span>
               </p>
@@ -327,11 +388,11 @@ export default function App() {
           </div>
         )}
 
-        <div className="mt-auto space-y-1 text-xs text-slate-400 dark:text-slate-500">
-          <p className="font-medium text-slate-500 dark:text-slate-400">Roster</p>
+        <div className="mt-auto space-y-1 text-xs text-slate-400 dark:text-[#9a9a9a]">
+          <p className="font-medium text-slate-500 dark:text-[#b5b5b5]">Roster</p>
           {roster.map((a, i) => (
             <p key={i}>
-              {i + 1} · {a.name} <span className="text-slate-300 dark:text-slate-600">— {a.model}</span>
+              {i + 1} · {a.name} <span className="text-slate-300 dark:text-[#8a8a8a]">— {a.model}</span>
               {a.with_research ? " 🔎" : ""}
               {caps[a.model]?.vision ? " 👁" : ""}
             </p>
@@ -340,8 +401,15 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="flex-1 bg-slate-50 dark:bg-slate-900">
-        <Chat items={items} busy={busy} status={status} onSend={handleSend} />
+      <main className="flex-1 bg-slate-50 dark:bg-[#333]">
+        <Chat
+          items={items}
+          busy={busy}
+          status={status}
+          streaming={streaming}
+          onSend={handleSend}
+          onStop={stopDebate}
+        />
       </main>
 
       {showRoster && (
@@ -354,7 +422,7 @@ export default function App() {
           ctxMax={ctxBounds.max}
           onChange={setRoster}
           onClose={() => setShowRoster(false)}
-          onReset={resetRoster}
+          onReset={resetSettings}
           onExport={exportConfig}
           onImport={importConfig}
         />

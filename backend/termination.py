@@ -72,13 +72,14 @@ class DebateTermination(TerminationCondition):
     def __init__(
         self,
         num_agents: int,
-        max_rounds: int,
+        max_rounds: int | None,
         loop_threshold: int = 3,
         sim: float = 0.85,
         token: str = "consensus",
     ) -> None:
         self._num_agents = max(1, num_agents)
-        self._max_rounds = max(1, max_rounds)
+        # None ⇒ no round cap (unlimited); consensus / stuck-loop still terminate.
+        self._max_rounds = None if max_rounds is None else max(1, max_rounds)
         self._loop_threshold = max(1, loop_threshold)
         self._sim = sim
         self._token = token
@@ -129,8 +130,8 @@ class DebateTermination(TerminationCondition):
             ):
                 return self._stop(REASON_STUCK_LOOP)
 
-            # 3) Round limit reached without agreement.
-            if rounds_done >= self._max_rounds:
+            # 3) Round limit reached without agreement (skipped when unlimited).
+            if self._max_rounds is not None and rounds_done >= self._max_rounds:
                 return self._stop(REASON_MAX_ROUNDS)
 
         return None

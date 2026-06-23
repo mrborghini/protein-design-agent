@@ -3,7 +3,7 @@ import { AgentConfig } from "../lib/sse";
 import { formatCtx } from "../lib/download";
 
 const FIELD =
-  "w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100";
+  "w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white";
 
 export type ModelCaps = Record<string, { vision: boolean | null }>;
 
@@ -11,7 +11,7 @@ function VisionBadge({ vision }: { vision: boolean | null | undefined }) {
   if (vision === true)
     return <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">👁 vision</span>;
   if (vision === false)
-    return <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">no vision</span>;
+    return <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-[#454545] dark:text-[#b5b5b5]">no vision</span>;
   return <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="Capability unknown — verified on send">vision?</span>;
 }
 
@@ -79,13 +79,13 @@ export default function AgentRoster({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
-        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl dark:bg-slate-800"
+        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl dark:bg-[#3c3c3c]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Configure agents</h2>
-            <p className="text-xs text-slate-400 dark:text-slate-500">
+            <h2 className="text-lg font-semibold text-slate-800 dark:text-white">Configure agents</h2>
+            <p className="text-xs text-slate-400 dark:text-[#9a9a9a]">
               Agents debate in order until they reach consensus. Add verifiers on different models.
             </p>
           </div>
@@ -101,19 +101,19 @@ export default function AgentRoster({
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <button
             onClick={onReset}
-            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:border-slate-400 dark:border-slate-600 dark:text-slate-200"
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:border-slate-400 dark:border-[#4a4a4a] dark:text-[#ededed]"
           >
             ↺ Reset to defaults
           </button>
           <button
             onClick={onExport}
-            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:border-slate-400 dark:border-slate-600 dark:text-slate-200"
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:border-slate-400 dark:border-[#4a4a4a] dark:text-[#ededed]"
           >
             ⭳ Download config
           </button>
           <button
             onClick={() => fileRef.current?.click()}
-            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:border-slate-400 dark:border-slate-600 dark:text-slate-200"
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:border-slate-400 dark:border-[#4a4a4a] dark:text-[#ededed]"
           >
             ⭱ Upload config
           </button>
@@ -133,7 +133,7 @@ export default function AgentRoster({
 
         <div className="space-y-3">
           {agents.map((a, i) => (
-            <div key={i} className="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+            <div key={i} className="rounded-xl border border-slate-200 p-3 dark:border-[#4a4a4a]">
               <div className="flex gap-2">
                 <div className="flex-1">
                   <input
@@ -155,7 +155,7 @@ export default function AgentRoster({
                 </div>
               </div>
 
-              <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+              <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-[#b5b5b5]">
                 <VisionBadge vision={caps[a.model]?.vision} />
                 {a.is_critic && (
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
@@ -174,9 +174,9 @@ export default function AgentRoster({
 
               {/* Per-agent context window slider */}
               <div className="mt-2">
-                <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-[#b5b5b5]">
                   <span>Context window</span>
-                  <span className="font-semibold text-slate-700 dark:text-slate-200">
+                  <span className="font-semibold text-slate-700 dark:text-[#ededed]">
                     {formatCtx(a.num_ctx ?? defaultNumCtx)}
                   </span>
                 </div>
@@ -203,7 +203,7 @@ export default function AgentRoster({
                       .map((other) => (
                         <label
                           key={other.name}
-                          className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300"
+                          className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-[#dcdcdc]"
                         >
                           <input
                             type="checkbox"
@@ -218,7 +218,7 @@ export default function AgentRoster({
               )}
 
               <div className="mt-2 flex items-center justify-between">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-[#dcdcdc]">
                   <input
                     type="checkbox"
                     checked={a.with_research}
@@ -242,7 +242,7 @@ export default function AgentRoster({
         <button
           onClick={add}
           disabled={models.length === 0}
-          className="mt-4 w-full rounded-lg border border-dashed border-slate-300 py-2 text-sm text-slate-600 hover:border-slate-400 disabled:opacity-40 dark:border-slate-600 dark:text-slate-300"
+          className="mt-4 w-full rounded-lg border border-dashed border-slate-300 py-2 text-sm text-slate-600 hover:border-slate-400 disabled:opacity-40 dark:border-[#4a4a4a] dark:text-[#dcdcdc]"
         >
           + Add agent
         </button>

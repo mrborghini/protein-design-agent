@@ -8,8 +8,8 @@ const AGENT_STYLES: Record<string, { badge: string; ring: string }> = {
 };
 
 const FALLBACK = {
-  badge: "bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
-  ring: "border-slate-200 dark:border-slate-700",
+  badge: "bg-slate-100 text-slate-700 dark:bg-[#454545] dark:text-[#ededed]",
+  ring: "border-slate-200 dark:border-[#4a4a4a]",
 };
 
 export default function AgentMessage({
@@ -27,24 +27,24 @@ export default function AgentMessage({
   const thinkingOpen = hasThinking && content.trim().length === 0;
 
   return (
-    <div className={`rounded-2xl border ${style.ring} bg-white px-4 py-3 shadow-sm dark:bg-slate-800`}>
+    <div className={`rounded-2xl border ${style.ring} bg-white px-4 py-3 shadow-sm dark:bg-[#3c3c3c]`}>
       <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${style.badge}`}>
         {agent}
       </span>
 
       {hasThinking && (
-        <details open={thinkingOpen} className="mt-2 rounded-lg bg-slate-50 dark:bg-slate-900/40">
-          <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
+        <details open={thinkingOpen} className="mt-2 rounded-lg bg-slate-50 dark:bg-[#2b2b2b]">
+          <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-slate-500 dark:text-[#b5b5b5]">
             💭 Thinking
           </summary>
-          <div className="whitespace-pre-wrap px-3 pb-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+          <div className="whitespace-pre-wrap px-3 pb-2 text-xs leading-relaxed text-slate-500 dark:text-[#b5b5b5]">
             {thinking}
           </div>
         </details>
       )}
 
       {content.trim().length > 0 && (
-        <div className="md mt-2 text-slate-800 dark:text-slate-100">
+        <div className="md mt-2 text-slate-800 dark:text-white">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         </div>
       )}

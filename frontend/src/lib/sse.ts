@@ -27,6 +27,8 @@ export type AgentConfig = {
 export type ChatConfig = {
   numCtx: number;
   maxTurns: number;
+  /** When true, run with no round cap (until consensus / deadlock / Stop). */
+  unlimited?: boolean;
   agents: AgentConfig[];
   /** Base64 (data-URL) images to send to vision-capable agents. */
   images?: string[];
@@ -45,6 +47,7 @@ export async function streamChat(
       message,
       num_ctx: config.numCtx,
       max_turns: config.maxTurns,
+      unlimited: !!config.unlimited,
       agents: config.agents,
       images: config.images && config.images.length ? config.images : undefined,
     }),

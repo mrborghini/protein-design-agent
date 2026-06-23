@@ -20,8 +20,8 @@ export default function DebatePanel({
   const replies = items.filter((it) => it.kind === "agent").length;
 
   return (
-    <details open={defaultOpen} className="rounded-2xl border border-slate-200 bg-white/40 dark:border-slate-700 dark:bg-slate-800/40">
-      <summary className="flex cursor-pointer select-none items-center justify-between rounded-2xl px-4 py-2 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-700/40">
+    <details open={defaultOpen} className="rounded-2xl border border-slate-200 bg-white/40 dark:border-[#4a4a4a] dark:bg-[#3c3c3c]">
+      <summary className="flex cursor-pointer select-none items-center justify-between rounded-2xl px-4 py-2 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-[#b5b5b5] dark:hover:bg-[#454545]">
         <span>
           Debate · {replies} {replies === 1 ? "reply" : "replies"}
         </span>

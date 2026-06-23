@@ -42,19 +42,33 @@ export default function Chat({
   items,
   busy,
   status,
+  streaming = false,
   onSend,
+  onStop,
 }: {
   items: ChatItem[];
   busy: boolean;
   status: string;
+  streaming?: boolean;
   onSend: (text: string, images: string[]) => void;
+  onStop?: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Stick to the bottom only while the user is already there; scrolling up pauses
+  // auto-scroll, and scrolling back to the bottom resumes it.
+  const atBottomRef = useRef(true);
+
+  function onScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [items, status]);
 
   function submit() {
@@ -75,9 +89,9 @@ export default function Chat({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex-1 space-y-3 overflow-y-auto px-6 py-6">
+      <div ref={scrollRef} onScroll={onScroll} className="flex-1 space-y-3 overflow-y-auto px-6 py-6">
         {items.length === 0 && (
-          <div className="mt-20 text-center text-sm text-slate-400 dark:text-slate-500">
+          <div className="mt-20 text-center text-sm text-slate-400 dark:text-[#9a9a9a]">
             Ask a protein-design question. The agents will discuss it (browsing the web if needed)
             and debate until they reach a consensus.
           </div>
@@ -96,7 +110,7 @@ export default function Chat({
                     </div>
                   )}
                   {g.user.text && (
-                    <div className="rounded-2xl bg-slate-800 px-4 py-2.5 text-sm text-white shadow-sm dark:bg-slate-600">
+                    <div className="rounded-2xl bg-slate-800 px-4 py-2.5 text-sm text-white shadow-sm dark:bg-[#4a4a4a]">
                       {g.user.text}
                     </div>
                   )}
@@ -115,7 +129,7 @@ export default function Chat({
         ))}
 
         {busy && (
-          <div className="flex items-center gap-2 px-1 text-sm text-slate-500 dark:text-slate-400">
+          <div className="flex items-center gap-2 px-1 text-sm text-slate-500 dark:text-[#b5b5b5]">
             <span className="h-2 w-2 animate-pulse rounded-full bg-slate-400" />
             {status || "Working…"}
           </div>
@@ -123,7 +137,7 @@ export default function Chat({
         <div ref={endRef} />
       </div>
 
-      <div className="border-t border-slate-200 bg-white px-6 py-4 dark:border-slate-700 dark:bg-slate-800">
+      <div className="border-t border-slate-200 bg-white px-6 py-4 dark:border-[#4a4a4a] dark:bg-[#3c3c3c]">
         {images.length > 0 && (
           <div className="mb-2">
             <div className="flex flex-wrap gap-2">
@@ -140,14 +154,14 @@ export default function Chat({
                 </div>
               ))}
             </div>
-            <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+            <p className="mt-1 text-[11px] text-slate-400 dark:text-[#9a9a9a]">
               Images are only sent to vision-capable agents — not all models support vision.
             </p>
           </div>
         )}
         <div className="flex items-end gap-2">
           <label
-            className="cursor-pointer rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:border-slate-400 dark:border-slate-600 dark:text-slate-300"
+            className="cursor-pointer rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:border-slate-400 dark:border-[#4a4a4a] dark:text-[#dcdcdc]"
             title="Attach images"
           >
             🖼️
@@ -173,15 +187,26 @@ export default function Chat({
             }}
             rows={1}
             placeholder="Ask about protein design…"
-            className="max-h-40 flex-1 resize-none rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500"
+            className="max-h-40 flex-1 resize-none rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white dark:placeholder:text-slate-500"
           />
-          <button
-            onClick={submit}
-            disabled={busy || (!draft.trim() && images.length === 0)}
-            className="rounded-xl bg-slate-800 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:opacity-40 dark:bg-sky-700 dark:hover:bg-sky-600"
-          >
-            Send
-          </button>
+          {streaming ? (
+            <button
+              onClick={onStop}
+              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-500"
+              title="Stop the debate"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={submit}
+              disabled={busy || (!draft.trim() && images.length === 0)}
+              title={busy ? "A debate is already running" : undefined}
+              className="rounded-xl bg-slate-800 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:opacity-40 dark:bg-sky-700 dark:hover:bg-sky-600"
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
     </div>
