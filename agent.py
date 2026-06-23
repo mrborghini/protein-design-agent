@@ -4,18 +4,28 @@ import asyncio
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
 from autogen_ext.models.ollama import OllamaChatCompletionClient
+from autogen_core.models import ModelInfo
 from autogen_core import CancellationToken
 
-ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+ollama_host = os.environ.get("OLLAMA_HOST", "http://100.66.23.9:11434")
+
+model_info = ModelInfo(
+    vision=False,
+    function_calling=True,
+    json_output=True,
+    family="unknown"
+)
 
 qwen_client = OllamaChatCompletionClient(
-    model="qwen2.5:latest",
-    host=ollama_host
+    model="qwen3.5:9b",
+    host=ollama_host,
+    model_info=model_info
 )
 
 deepseek_client = OllamaChatCompletionClient(
-    model="deepseek-r1:latest",
-    host=ollama_host
+    model="gemma4:12b",
+    host=ollama_host,
+    model_info=model_info
 )
 
 async def main():
