@@ -26,7 +26,7 @@ qwen_client = OllamaChatCompletionClient(
     model_info=model_info
 )
 
-deepseek_client = OllamaChatCompletionClient(
+gemma_client = OllamaChatCompletionClient(
     model="gemma4:12b",
     host=ollama_host,
     model_info=model_info
@@ -34,7 +34,7 @@ deepseek_client = OllamaChatCompletionClient(
 
 
 gpt_oss_client = OllamaChatCompletionClient(
-    model="gpt-oss",
+    model="gpt-oss:latest",
     host=ollama_host,
     model_info=model_info
 )
@@ -48,13 +48,13 @@ async def main():
     
     hypothesis_agent = AssistantAgent(
         name="HypothesisAgent",
-        model_client=deepseek_client,
+        model_client=gemma_client,
         system_message="You generate actionable hypotheses for protein design."
     )
     
     critic = AssistantAgent(
         name="Critic",
-        model_client=qwen_client,
+        model_client=gpt_oss_client,
         system_message="You critique hypotheses based on facts."
     )
 
