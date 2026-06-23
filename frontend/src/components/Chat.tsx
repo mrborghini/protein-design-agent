@@ -7,9 +7,15 @@ export type ChatItem =
   | { kind: "agent"; agent: string; content: string; thinking?: string; id?: number }
   | { kind: "research"; query: string; sources: { title: string; url: string }[]; screenshot: string }
   | { kind: "consensus" }
+  | { kind: "closed" }
   | { kind: "error"; text: string };
 
-type Group = { user: { text: string; images?: string[] } | null; items: ChatItem[]; consensus: boolean };
+type Group = {
+  user: { text: string; images?: string[] } | null;
+  items: ChatItem[];
+  consensus: boolean;
+  closed: boolean;
+};
 
 /** Split the flat conversation into per-debate groups (a user message starts one). */
 function groupItems(items: ChatItem[]): Group[] {
@@ -17,14 +23,15 @@ function groupItems(items: ChatItem[]): Group[] {
   let cur: Group | null = null;
   for (const item of items) {
     if (item.kind === "user") {
-      cur = { user: { text: item.text, images: item.images }, items: [], consensus: false };
+      cur = { user: { text: item.text, images: item.images }, items: [], consensus: false, closed: false };
       groups.push(cur);
     } else {
       if (!cur) {
-        cur = { user: null, items: [], consensus: false };
+        cur = { user: null, items: [], consensus: false, closed: false };
         groups.push(cur);
       }
       if (item.kind === "consensus") cur.consensus = true;
+      else if (item.kind === "closed") cur.closed = true;
       else cur.items.push(item);
     }
   }
@@ -97,7 +104,12 @@ export default function Chat({
               </div>
             )}
             {g.items.length > 0 && (
-              <DebatePanel items={g.items} consensus={g.consensus} defaultOpen={gi === groups.length - 1} />
+              <DebatePanel
+                items={g.items}
+                consensus={g.consensus}
+                closed={g.closed}
+                defaultOpen={gi === groups.length - 1}
+              />
             )}
           </div>
         ))}

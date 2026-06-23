@@ -6,7 +6,6 @@ Everything is local: inference via Ollama, browsing via headless Playwright.
 import asyncio
 import json
 import os
-import re
 import urllib.request
 from io import BytesIO
 
@@ -16,21 +15,31 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage, MultiModalMessage, ModelClientStreamingChunkEvent
 from autogen_agentchat.teams import RoundRobinGroupChat
-from autogen_agentchat.conditions import TextMentionTermination, MaxMessageTermination
+from autogen_agentchat.conditions import MaxMessageTermination
 from autogen_agentchat.base import TaskResult
 from autogen_core import CancellationToken, Image as AGImage
+from autogen_core.tools import FunctionTool
 
-from backend.agents import build_roster, DEFAULT_AGENTS, DEFAULT_NUM_CTX, OLLAMA_HOST
+from backend.agents import build_roster, safe_name, DEFAULT_AGENTS, DEFAULT_NUM_CTX, OLLAMA_HOST
 from backend.research import research_sink
 from backend.session import session
+from backend.termination import (
+    DebateTermination,
+    signals_consensus,
+    strip_consensus,
+    REASON_CONSENSUS,
+    REASON_STUCK_LOOP,
+)
 
 NUM_CTX_MIN = 512
 NUM_CTX_MAX = 262144  # 256K — some models (e.g. long-context Qwen/Llama) support this
-DEFAULT_MAX_TURNS = 12
-MAX_TURNS_MIN = 2
-MAX_TURNS_MAX = 40
+# "Turns" are ROUNDS: one turn = every agent speaks once, in order.
+DEFAULT_MAX_TURNS = 6
+MAX_TURNS_MIN = 1
+MAX_TURNS_MAX = 20
 
 app = FastAPI(title="Protein Design Agent")
 
@@ -189,13 +198,44 @@ def _strip_data_url(b64: str) -> str:
     return b64
 
 
+async def _forward(msg, queue: asyncio.Queue) -> None:
+    """Emit one agent event onto the SSE queue (shared by the debate + closing turn).
+
+    Streaming chunks become `delta`s; complete agent messages become `message`s
+    (with the consensus token stripped for display) plus a `usage` event.
+    """
+    if isinstance(msg, ModelClientStreamingChunkEvent) and msg.source != "user":
+        if msg.content:
+            await queue.put({"type": "delta", "agent": msg.source, "content": msg.content})
+        return
+    if isinstance(msg, TextMessage) and msg.source != "user":
+        text = msg.content or ""
+        if signals_consensus(text):
+            # Pure-agreement turn: show the substantive remainder, or a short marker
+            # so the streamed bubble reconciles to something meaningful (not "CONSENSUS").
+            text = strip_consensus(text) or "✓ Agrees — consensus"
+        elif not text.strip():
+            # Empty turn (e.g. a thinking model that spent its budget on reasoning).
+            # Don't emit an empty bubble; there were no deltas to reconcile.
+            return
+        await queue.put({"type": "message", "agent": msg.source, "content": text})
+        usage = getattr(msg, "models_usage", None)
+        if usage is not None:
+            await queue.put({
+                "type": "usage",
+                "agent": msg.source,
+                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            })
+
+
 async def _debate(
     message: str,
     agents_cfg: list[dict] | None,
     queue: asyncio.Queue,
     token: CancellationToken,
     num_ctx: int,
-    max_turns: int,
+    max_turns: int,  # = max ROUNDS (one round = every agent speaks once)
     images: list[str] | None = None,
     vision_models: set[str] | None = None,
     thinking_models: set[str] | None = None,
@@ -228,28 +268,68 @@ async def _debate(
             # image content; only true vision models will actually use it.
             build_vision = roster_models
 
+        # The Critic gets a clarification tool that can ask one specific agent a
+        # direct question. The registry is filled after the roster is built (the
+        # tool only runs later, mid-debate), so a late-bound dict is fine.
+        registry: dict[str, AssistantAgent] = {}
+        calls_left = {"n": 2}  # hard cap — "only if absolutely necessary"
+        critic_cfg = next((c for c in configs if c.get("is_critic")), None)
+        critic_name = safe_name(critic_cfg["name"]) if critic_cfg else ""
+
+        async def ask_clarification(target_agent: str, question: str) -> str:
+            """Ask ONE specific agent a direct clarifying question; return its answer."""
+            if calls_left["n"] <= 0:
+                return "Clarification limit reached — proceed with the information available."
+            target = registry.get(target_agent) or registry.get(safe_name(target_agent))
+            if target is None:
+                return f"No agent named '{target_agent}'. Available: {', '.join(registry)}."
+            if critic_name and target.name == critic_name:
+                return "You cannot ask yourself; reason from the discussion instead."
+            calls_left["n"] -= 1
+            await queue.put({"type": "message", "agent": "Critic", "content": f"❓ **(to {target.name})** {question}"})
+            result = await target.run(task=question, cancellation_token=token)
+            answer = ""
+            for m in result.messages:
+                if isinstance(m, TextMessage) and m.source == target.name:
+                    answer = m.content or ""
+            answer = answer or "(no answer)"
+            await queue.put({"type": "message", "agent": target.name, "content": answer})
+            return answer
+
+        clarification_tool = FunctionTool(
+            ask_clarification,
+            name="ask_clarification",
+            description=(
+                "Ask ONE specific agent a direct clarifying question. Args: target_agent "
+                "(the agent's name) and question. Use only when something is genuinely unclear "
+                "and blocks your judgment."
+            ),
+        )
+
         roster = build_roster(
             agents_cfg, num_ctx=num_ctx, consensus=True,
             vision_models=build_vision, thinking_models=thinking_models or set(),
+            clarification_tool=clarification_tool,
         )
-        await queue.put(
-            {"type": "status", "stage": "debate", "text": f"Debating with {len(roster)} agents (max {max_turns} turns)…"}
-        )
+        registry.update({a.name: a for a in roster})
+        critic = registry.get(critic_name) or roster[-1]
 
-        # Local models don't always reproduce the exact uppercase token, so accept
-        # common case variants. The hard max_turns cap is the backstop.
-        consensus_hit = (
-            TextMentionTermination("CONSENSUS")
-            | TextMentionTermination("Consensus")
-            | TextMentionTermination("consensus")
+        max_rounds = max_turns
+        n = len(roster)
+        # 1 round = n agent messages. DebateTermination decides the outcome; the
+        # MaxMessageTermination (counting tool/summary messages too) is a hard backstop.
+        backstop = max_rounds * n * 3 + 5
+        termination = DebateTermination(n, max_rounds) | MaxMessageTermination(backstop)
+        team = RoundRobinGroupChat(roster, termination_condition=termination, max_turns=backstop)
+        await queue.put(
+            {"type": "status", "stage": "debate",
+             "text": f"Debating with {n} agents (max {max_rounds} rounds)…"}
         )
-        termination = consensus_hit | MaxMessageTermination(max_turns)
-        team = RoundRobinGroupChat(roster, termination_condition=termination, max_turns=max_turns)
 
         doc = session.context_block()
         doc_prefix = f"{doc}\n\n" if doc else ""
         # NB: keep the literal consensus token OUT of the task text — it lives in
-        # each agent's system prompt. Putting it here would trip TextMentionTermination
+        # each agent's system prompt. Putting it here could trip the consensus check
         # on the seed message and end the debate before anyone speaks.
         task_text = (
             f"{doc_prefix}User question: {message}\n\n"
@@ -263,34 +343,36 @@ async def _debate(
             content.extend(AGImage.from_base64(_strip_data_url(b)) for b in images)
             task = MultiModalMessage(content=content, source="user")
 
+        result: TaskResult | None = None
         async for msg in team.run_stream(task=task, cancellation_token=token):
             if isinstance(msg, TaskResult):
+                result = msg
                 break
-            # Real-time answer tokens. (Thinking deltas are pushed straight onto the
-            # queue by the streaming client, tagged as "thinking_delta".)
-            if isinstance(msg, ModelClientStreamingChunkEvent) and msg.source != "user":
-                if msg.content:
-                    await queue.put({"type": "delta", "agent": msg.source, "content": msg.content})
-                continue
-            if isinstance(msg, TextMessage) and msg.source != "user":
-                content_text = msg.content or ""
-                if "consensus" in content_text.lower():
-                    # Strip the agreement token (any case / markdown emphasis) for display.
-                    stripped = re.sub(r"\**\bconsensus\b\**\.?", "", content_text, flags=re.IGNORECASE).strip()
-                    if stripped:
-                        await queue.put({"type": "message", "agent": msg.source, "content": stripped})
-                    await queue.put({"type": "status", "stage": "consensus", "text": "Consensus reached ✓"})
-                else:
-                    await queue.put({"type": "message", "agent": msg.source, "content": content_text})
-                # Emit token usage for this turn when the client reports it.
-                usage = getattr(msg, "models_usage", None)
-                if usage is not None:
-                    await queue.put({
-                        "type": "usage",
-                        "agent": msg.source,
-                        "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                        "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-                    })
+            # Real-time answer tokens + completed messages. (Thinking deltas are
+            # pushed straight onto the queue by the streaming client.)
+            await _forward(msg, queue)
+
+        reason = (result.stop_reason if result else "") or ""
+        if REASON_CONSENSUS in reason:
+            await queue.put({"type": "status", "stage": "consensus", "text": "Consensus reached ✓"})
+        else:
+            # No agreement: the Critic delivers a bullet-point closing statement.
+            why = "the discussion kept repeating itself (deadlock)" if REASON_STUCK_LOOP in reason \
+                else "the round limit was reached"
+            await queue.put({"type": "status", "stage": "debate",
+                             "text": "No agreement — the Critic is summarising why…"})
+            closing_task = (
+                f"The discussion ended without the group reaching agreement ({why}). As the "
+                "Critic, give the FINAL closing statement as markdown bullet points: each bullet "
+                "a specific point of disagreement and why it blocked consensus. Be concise. Do "
+                "not emit the consensus token."
+            )
+            async for cmsg in critic.run_stream(task=closing_task, cancellation_token=token):
+                if isinstance(cmsg, TaskResult):
+                    break
+                await _forward(cmsg, queue)
+            await queue.put({"type": "status", "stage": "closed",
+                             "text": "Debate closed by the Critic — no consensus."})
 
     except asyncio.CancelledError:
         raise

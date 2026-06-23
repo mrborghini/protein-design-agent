@@ -9,10 +9,12 @@ import ResearchTrace from "./ResearchTrace";
 export default function DebatePanel({
   items,
   consensus,
+  closed = false,
   defaultOpen = true,
 }: {
   items: ChatItem[];
   consensus: boolean;
+  closed?: boolean;
   defaultOpen?: boolean;
 }) {
   const replies = items.filter((it) => it.kind === "agent").length;
@@ -24,6 +26,9 @@ export default function DebatePanel({
           Debate · {replies} {replies === 1 ? "reply" : "replies"}
         </span>
         {consensus && <span className="text-emerald-600 dark:text-emerald-400">consensus ✓</span>}
+        {!consensus && closed && (
+          <span className="text-amber-600 dark:text-amber-400">closed without consensus</span>
+        )}
       </summary>
       <div className="space-y-3 px-3 pb-3">
         {items.map((item, i) => {

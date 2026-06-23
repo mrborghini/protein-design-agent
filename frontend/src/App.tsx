@@ -7,7 +7,7 @@ import { streamChat, AgentConfig } from "./lib/sse";
 import { useDarkMode } from "./lib/theme";
 import { downloadJSON, downloadText, formatTokens } from "./lib/download";
 
-const FALLBACK = { numCtx: 32768, ctxMin: 512, ctxMax: 262144, maxTurns: 12, turnsMin: 2, turnsMax: 40 };
+const FALLBACK = { numCtx: 32768, ctxMin: 512, ctxMax: 262144, maxTurns: 6, turnsMin: 1, turnsMax: 20 };
 const ROSTER_KEY = "pda-roster";
 const TURNS_KEY = "pda-maxturns";
 const CTX_KEY = "pda-numctx";
@@ -41,6 +41,7 @@ function conversationToMarkdown(items: ChatItem[]): string {
     else if (it.kind === "research")
       lines.push(`> 🔎 Research: ${it.query}\n>\n` + it.sources.map((s) => `> - [${s.title || s.url}](${s.url})`).join("\n") + "\n");
     else if (it.kind === "consensus") lines.push(`_Consensus reached ✓_\n`);
+    else if (it.kind === "closed") lines.push(`_Debate closed by the Critic — no consensus_\n`);
     else if (it.kind === "error") lines.push(`> ⚠️ ${it.text}\n`);
   }
   return lines.join("\n");
@@ -197,6 +198,7 @@ export default function App() {
           if (e.type === "status") {
             setStatus(e.text);
             if (e.stage === "consensus") push({ kind: "consensus" });
+            else if (e.stage === "closed") push({ kind: "closed" });
           } else if (e.type === "research")
             push({ kind: "research", query: e.query, sources: e.sources, screenshot: e.screenshot_b64 });
           else if (e.type === "delta") appendStream(ensureStreamItem(e.agent), "content", e.content);
@@ -273,6 +275,9 @@ export default function App() {
             }
             className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
           />
+          <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+            1 turn = every agent speaks once. If they never agree, the Critic closes with why.
+          </p>
         </div>
 
         <button

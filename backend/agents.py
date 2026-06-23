@@ -23,14 +23,27 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 # Overridable via env; the web UI can also set it per request.
 DEFAULT_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "32768"))
 
-# Appended to each agent's system prompt during a consensus debate. Agents emit
-# this exact token when they agree, which triggers TextMentionTermination.
+# Appended to each agent's system prompt during a consensus debate. The debate
+# runs in turn-based rounds (each agent speaks once per round, in order) and ends
+# only when EVERY agent agrees in the same round. Agents emit this exact token,
+# on its own line, when they personally agree — see backend/termination.py.
 CONSENSUS_RULE = (
-    "You are one of several expert agents collaborating in a round-table discussion. "
-    "Read the prior messages, build on or critique the current proposal, and add your "
-    "expertise. When you fully agree that the group has reached a correct, well-supported "
+    "You are one of several expert agents collaborating in a turn-by-turn round-table "
+    "discussion. Each round, every agent speaks once, in order. On your turn, read all "
+    "prior messages, then build on or critique the current proposal and add your expertise. "
+    "The discussion continues round after round and ends only when EVERY agent agrees. When, "
+    "and only when, you personally judge that the group has reached a correct, well-supported "
     "conclusion and you have nothing further to add, reply with exactly the single token "
-    "CONSENSUS (uppercase, on its own line) and nothing else."
+    "CONSENSUS (uppercase, on its own line) and nothing else. If you still have any reservation, "
+    "do NOT emit the token — briefly explain your remaining concern instead."
+)
+
+# Appended (after the critique directive) only to the protected Critic. The Critic
+# may ask one targeted question via the ask_clarification tool when genuinely stuck.
+CRITIC_CLARIFY_RULE = (
+    "\n\nIf something is genuinely unclear and blocks your judgment, you may call the "
+    "ask_clarification tool to ask ONE specific agent a direct question — but only if "
+    "absolutely necessary. Prefer reasoning from the discussion over asking."
 )
 
 # These models are function-calling + json capable; family "unknown" keeps the
@@ -47,8 +60,8 @@ def _model_info(vision: bool = False) -> ModelInfo:
 
 
 # Seed roster mirroring the original three-role pipeline. The literature agent
-# gets the web_research (headless Playwright) tool. The Critic targets the first
-# agent by default (`critiques`); it is flagged as the protected default critic.
+# gets the web_research (headless Playwright) tool. The Critic critiques ALL other
+# agents by default (empty/unset `critiques` ⇒ everyone); it is the protected critic.
 DEFAULT_AGENTS: list[dict] = [
     {
         "name": "LiteratureAgent",
@@ -73,7 +86,7 @@ DEFAULT_AGENTS: list[dict] = [
         "model": "gpt-oss:latest",
         "with_research": False,
         "is_critic": True,
-        "critiques": ["LiteratureAgent"],
+        "critiques": [],  # empty ⇒ critique ALL other agents (default)
         "system_message": "You critique hypotheses based strictly on the established facts.",
     },
 ]
@@ -130,16 +143,27 @@ def build_agent(
     vision: bool = False,
     enable_thinking: bool = False,
     critiques: list[str] | None = None,
+    is_critic: bool = False,
+    clarification_tool=None,
 ) -> AssistantAgent:
     """Generic agent factory used by both the CLI and the consensus debate."""
     sys = system_message + critique_directive(critiques)
+    if is_critic and clarification_tool is not None:
+        sys += CRITIC_CLARIFY_RULE
     sys += f"\n\n{CONSENSUS_RULE}" if consensus else ""
     safe = safe_name(name)
+
+    tools = []
+    if with_research:
+        tools.append(web_research_tool)
+    if is_critic and clarification_tool is not None:
+        tools.append(clarification_tool)
+
     return AssistantAgent(
         name=safe,
         model_client=_client(model, num_ctx, vision=vision, agent_name=safe, enable_thinking=enable_thinking),
-        tools=[web_research_tool] if with_research else [],
-        reflect_on_tool_use=with_research,
+        tools=tools,
+        reflect_on_tool_use=bool(tools),  # reflect when any tool (research / clarify) is present
         model_client_stream=True,  # surface token-by-token deltas to the UI
         system_message=sys,
     )
@@ -151,6 +175,7 @@ def build_roster(
     consensus: bool = True,
     vision_models: set[str] | None = None,
     thinking_models: set[str] | None = None,
+    clarification_tool=None,
 ) -> list[AssistantAgent]:
     """Build the list of agents for the debate from config (or the defaults).
 
@@ -162,6 +187,18 @@ def build_roster(
     configs = agents if agents else DEFAULT_AGENTS
     vision_models = vision_models or set()
     thinking_models = thinking_models or set()
+    all_names = [safe_name(c["name"]) for c in configs]
+
+    def _critic_targets(c: dict) -> list[str] | None:
+        """A critic with no explicit targets critiques ALL other agents (default)."""
+        if not c.get("is_critic"):
+            return None
+        chosen = [safe_name(t) for t in (c.get("critiques") or []) if t]
+        if chosen:
+            return chosen
+        self_name = safe_name(c["name"])
+        return [n for n in all_names if n != self_name]
+
     return [
         build_agent(
             name=c["name"],
@@ -172,7 +209,9 @@ def build_roster(
             consensus=consensus,
             vision=c["model"] in vision_models,
             enable_thinking=c["model"] in thinking_models,
-            critiques=c.get("critiques") if c.get("is_critic") else None,
+            critiques=_critic_targets(c),
+            is_critic=bool(c.get("is_critic")),
+            clarification_tool=clarification_tool,
         )
         for c in configs
     ]

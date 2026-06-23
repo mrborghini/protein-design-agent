@@ -194,7 +194,9 @@ export default function AgentRoster({
               {/* Critic targeting */}
               {a.is_critic && (
                 <div className="mt-2 rounded-lg bg-amber-50 p-2 dark:bg-amber-900/20">
-                  <p className="text-[11px] font-medium text-amber-800 dark:text-amber-300">Critiques which agents?</p>
+                  <p className="text-[11px] font-medium text-amber-800 dark:text-amber-300">
+                    Critiques which agents? <span className="font-normal">(none selected = all)</span>
+                  </p>
                   <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
                     {agents
                       .filter((_, idx) => idx !== i)
