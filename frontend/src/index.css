@@ -102,8 +102,8 @@ body {
   margin: 0.6em 0;
 }
 .dark .md blockquote {
-  border-color: #555;
-  color: #b5b5b5;
+  border-color: #666;
+  color: #d0d0d0;
 }
 .md table {
   border-collapse: collapse;

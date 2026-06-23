@@ -4,7 +4,7 @@ import { fileToDataURL } from "../lib/download";
 
 export type ChatItem =
   | { kind: "user"; text: string; images?: string[] }
-  | { kind: "agent"; agent: string; content: string; thinking?: string; id?: number }
+  | { kind: "agent"; agent: string; content: string; thinking?: string; id?: number; round?: number }
   | { kind: "research"; query: string; sources: { title: string; url: string }[]; screenshot: string }
   | { kind: "consensus" }
   | { kind: "closed" }
@@ -55,20 +55,30 @@ export default function Chat({
 }) {
   const [draft, setDraft] = useState("");
   const [images, setImages] = useState<string[]>([]);
-  const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Stick to the bottom only while the user is already there; scrolling up pauses
   // auto-scroll, and scrolling back to the bottom resumes it.
-  const atBottomRef = useRef(true);
+  const stickRef = useRef(true);
+  // Set just before we auto-scroll, so the resulting scroll event isn't mistaken
+  // for the user scrolling (which would otherwise keep toggling stick off/on).
+  const programmaticRef = useRef(false);
 
   function onScroll() {
+    if (programmaticRef.current) {
+      programmaticRef.current = false;
+      return;
+    }
     const el = scrollRef.current;
     if (!el) return;
-    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }
 
   useEffect(() => {
-    if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollRef.current;
+    if (el && stickRef.current) {
+      programmaticRef.current = true;
+      el.scrollTop = el.scrollHeight; // instant — avoids fighting rapid stream updates
+    }
   }, [items, status]);
 
   function submit() {
@@ -91,7 +101,7 @@ export default function Chat({
     <div className="flex h-full flex-col">
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 space-y-3 overflow-y-auto px-6 py-6">
         {items.length === 0 && (
-          <div className="mt-20 text-center text-sm text-slate-400 dark:text-[#9a9a9a]">
+          <div className="mt-20 text-center text-sm text-slate-400 dark:text-[#c8c8c8]">
             Ask a protein-design question. The agents will discuss it (browsing the web if needed)
             and debate until they reach a consensus.
           </div>
@@ -129,12 +139,11 @@ export default function Chat({
         ))}
 
         {busy && (
-          <div className="flex items-center gap-2 px-1 text-sm text-slate-500 dark:text-[#b5b5b5]">
+          <div className="flex items-center gap-2 px-1 text-sm text-slate-500 dark:text-[#d0d0d0]">
             <span className="h-2 w-2 animate-pulse rounded-full bg-slate-400" />
             {status || "Working…"}
           </div>
         )}
-        <div ref={endRef} />
       </div>
 
       <div className="border-t border-slate-200 bg-white px-6 py-4 dark:border-[#4a4a4a] dark:bg-[#3c3c3c]">
@@ -154,7 +163,7 @@ export default function Chat({
                 </div>
               ))}
             </div>
-            <p className="mt-1 text-[11px] text-slate-400 dark:text-[#9a9a9a]">
+            <p className="mt-1 text-[11px] text-slate-400 dark:text-[#c8c8c8]">
               Images are only sent to vision-capable agents — not all models support vision.
             </p>
           </div>

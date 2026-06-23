@@ -11,7 +11,7 @@ function VisionBadge({ vision }: { vision: boolean | null | undefined }) {
   if (vision === true)
     return <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">👁 vision</span>;
   if (vision === false)
-    return <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-[#454545] dark:text-[#b5b5b5]">no vision</span>;
+    return <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-[#454545] dark:text-[#d0d0d0]">no vision</span>;
   return <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="Capability unknown — verified on send">vision?</span>;
 }
 
@@ -85,7 +85,7 @@ export default function AgentRoster({
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold text-slate-800 dark:text-white">Configure agents</h2>
-            <p className="text-xs text-slate-400 dark:text-[#9a9a9a]">
+            <p className="text-xs text-slate-400 dark:text-[#c8c8c8]">
               Agents debate in order until they reach consensus. Add verifiers on different models.
             </p>
           </div>
@@ -155,7 +155,7 @@ export default function AgentRoster({
                 </div>
               </div>
 
-              <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-[#b5b5b5]">
+              <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-[#d0d0d0]">
                 <VisionBadge vision={caps[a.model]?.vision} />
                 {a.is_critic && (
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
@@ -174,7 +174,7 @@ export default function AgentRoster({
 
               {/* Per-agent context window slider */}
               <div className="mt-2">
-                <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-[#b5b5b5]">
+                <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-[#d0d0d0]">
                   <span>Context window</span>
                   <span className="font-semibold text-slate-700 dark:text-[#ededed]">
                     {formatCtx(a.num_ctx ?? defaultNumCtx)}

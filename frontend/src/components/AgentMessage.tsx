@@ -16,10 +16,12 @@ export default function AgentMessage({
   agent,
   content,
   thinking,
+  round,
 }: {
   agent: string;
   content: string;
   thinking?: string;
+  round?: number;
 }) {
   const style = AGENT_STYLES[agent] ?? FALLBACK;
   const hasThinking = !!thinking && thinking.trim().length > 0;
@@ -28,16 +30,26 @@ export default function AgentMessage({
 
   return (
     <div className={`rounded-2xl border ${style.ring} bg-white px-4 py-3 shadow-sm dark:bg-[#3c3c3c]`}>
-      <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${style.badge}`}>
-        {agent}
-      </span>
+      <div className="flex items-center gap-2">
+        {round != null && (
+          <span
+            className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-slate-200 text-[10px] font-semibold text-slate-600 dark:bg-[#4a4a4a] dark:text-[#d0d0d0]"
+            title={`Round ${round}`}
+          >
+            {round}
+          </span>
+        )}
+        <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${style.badge}`}>
+          {agent}
+        </span>
+      </div>
 
       {hasThinking && (
         <details open={thinkingOpen} className="mt-2 rounded-lg bg-slate-50 dark:bg-[#2b2b2b]">
-          <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-slate-500 dark:text-[#b5b5b5]">
+          <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-slate-500 dark:text-[#d0d0d0]">
             💭 Thinking
           </summary>
-          <div className="whitespace-pre-wrap px-3 pb-2 text-xs leading-relaxed text-slate-500 dark:text-[#b5b5b5]">
+          <div className="whitespace-pre-wrap px-3 pb-2 text-xs leading-relaxed text-slate-500 dark:text-[#d0d0d0]">
             {thinking}
           </div>
         </details>

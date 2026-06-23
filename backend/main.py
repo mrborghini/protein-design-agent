@@ -201,15 +201,20 @@ def _strip_data_url(b64: str) -> str:
     return b64
 
 
-async def _forward(msg, queue: asyncio.Queue) -> None:
+async def _forward(msg, queue: asyncio.Queue, round_no: int | None = None) -> None:
     """Emit one agent event onto the SSE queue (shared by the debate + closing turn).
 
     Streaming chunks become `delta`s; complete agent messages become `message`s
-    (with the consensus token stripped for display) plus a `usage` event.
+    (with the consensus token stripped for display) plus a `usage` event. When
+    `round_no` is given (the main debate loop), it's attached so the UI can show a
+    round badge; the closing/clarification messages pass None (no round).
     """
     if isinstance(msg, ModelClientStreamingChunkEvent) and msg.source != "user":
         if msg.content:
-            await queue.put({"type": "delta", "agent": msg.source, "content": msg.content})
+            ev = {"type": "delta", "agent": msg.source, "content": msg.content}
+            if round_no is not None:
+                ev["round"] = round_no
+            await queue.put(ev)
         return
     if isinstance(msg, TextMessage) and msg.source != "user":
         text = msg.content or ""
@@ -221,7 +226,10 @@ async def _forward(msg, queue: asyncio.Queue) -> None:
             # Empty turn (e.g. a thinking model that spent its budget on reasoning).
             # Don't emit an empty bubble; there were no deltas to reconcile.
             return
-        await queue.put({"type": "message", "agent": msg.source, "content": text})
+        ev = {"type": "message", "agent": msg.source, "content": text}
+        if round_no is not None:
+            ev["round"] = round_no
+        await queue.put(ev)
         usage = getattr(msg, "models_usage", None)
         if usage is not None:
             await queue.put({
@@ -351,13 +359,17 @@ async def _debate(
             task = MultiModalMessage(content=content, source="user")
 
         result: TaskResult | None = None
+        completed_turns = 0  # one round = n agent turns (round-robin cadence)
         async for msg in team.run_stream(task=task, cancellation_token=token):
             if isinstance(msg, TaskResult):
                 result = msg
                 break
             # Real-time answer tokens + completed messages. (Thinking deltas are
-            # pushed straight onto the queue by the streaming client.)
-            await _forward(msg, queue)
+            # pushed straight onto the queue by the streaming client.) The current
+            # turn's round is completed_turns // n + 1.
+            await _forward(msg, queue, round_no=completed_turns // n + 1)
+            if isinstance(msg, TextMessage) and msg.source != "user":
+                completed_turns += 1
 
         reason = (result.stop_reason if result else "") or ""
         if REASON_CONSENSUS in reason:
@@ -398,6 +410,8 @@ def _record_event(event: dict, thinking: dict[str, str]) -> None:
         item = {"kind": "agent", "agent": event["agent"], "content": event.get("content", "")}
         if thinking.get(event["agent"]):
             item["thinking"] = thinking.pop(event["agent"])
+        if event.get("round") is not None:
+            item["round"] = event["round"]
         session.append_item(item)
     elif t == "research":
         session.append_item({

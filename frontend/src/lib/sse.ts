@@ -4,8 +4,8 @@
 export type StreamEvent =
   | { type: "status"; stage: string; text: string }
   | { type: "research"; query: string; sources: { title: string; url: string }[]; screenshot_b64: string }
-  | { type: "message"; agent: string; content: string }
-  | { type: "delta"; agent: string; content: string }
+  | { type: "message"; agent: string; content: string; round?: number }
+  | { type: "delta"; agent: string; content: string; round?: number }
   | { type: "thinking_delta"; agent: string; content: string }
   | { type: "usage"; agent: string; prompt_tokens: number; completion_tokens: number }
   | { type: "error"; text: string }

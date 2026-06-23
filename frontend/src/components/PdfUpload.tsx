@@ -39,7 +39,7 @@ export default function PdfUpload({ onLoaded }: { onLoaded: (info: PdfInfo) => v
         <span className="text-sm font-medium text-slate-700 dark:text-[#ededed]">
           {busy ? "Reading PDF…" : "Drop a PDF or click to upload"}
         </span>
-        <span className="mt-1 text-xs text-slate-400 dark:text-[#9a9a9a]">Used as grounding context</span>
+        <span className="mt-1 text-xs text-slate-400 dark:text-[#c8c8c8]">Used as grounding context</span>
         <input
           type="file"
           accept="application/pdf"

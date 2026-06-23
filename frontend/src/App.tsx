@@ -162,11 +162,18 @@ export default function App() {
   }
 
   // Find/create the agent item being streamed; subsequent deltas append to it.
-  function ensureStreamItem(agent: string): number {
-    if (streamRef.current && streamRef.current.agent === agent) return streamRef.current.id;
+  function ensureStreamItem(agent: string, round?: number): number {
+    if (streamRef.current && streamRef.current.agent === agent) {
+      const id = streamRef.current.id;
+      if (round != null)
+        setItems((prev) =>
+          prev.map((it) => (it.kind === "agent" && it.id === id && it.round !== round ? { ...it, round } : it))
+        );
+      return id;
+    }
     const id = ++idRef.current;
     streamRef.current = { agent, id };
-    setItems((prev) => [...prev, { kind: "agent", agent, content: "", thinking: "", id }]);
+    setItems((prev) => [...prev, { kind: "agent", agent, content: "", thinking: "", id, round }]);
     return id;
   }
   function appendStream(id: number, field: "content" | "thinking", delta: string) {
@@ -253,19 +260,23 @@ export default function App() {
             else if (e.stage === "closed") push({ kind: "closed" });
           } else if (e.type === "research")
             push({ kind: "research", query: e.query, sources: e.sources, screenshot: e.screenshot_b64 });
-          else if (e.type === "delta") appendStream(ensureStreamItem(e.agent), "content", e.content);
+          else if (e.type === "delta") appendStream(ensureStreamItem(e.agent, e.round), "content", e.content);
           else if (e.type === "thinking_delta") appendStream(ensureStreamItem(e.agent), "thinking", e.content);
           else if (e.type === "message") {
-            // Finalize the streamed item with the authoritative (consensus-stripped) text.
+            // Finalize the streamed item with the authoritative (consensus-stripped) text + round.
             const cur = streamRef.current;
             if (cur && cur.agent === e.agent) {
               const id = cur.id;
               setItems((prev) =>
-                prev.map((it) => (it.kind === "agent" && it.id === id ? { ...it, content: e.content } : it))
+                prev.map((it) =>
+                  it.kind === "agent" && it.id === id
+                    ? { ...it, content: e.content, round: e.round ?? it.round }
+                    : it
+                )
               );
               streamRef.current = null;
             } else {
-              push({ kind: "agent", agent: e.agent, content: e.content });
+              push({ kind: "agent", agent: e.agent, content: e.content, round: e.round });
             }
           } else if (e.type === "usage") addUsage(e.agent, e.prompt_tokens, e.completion_tokens);
           else if (e.type === "error") push({ kind: "error", text: e.text });
@@ -297,7 +308,7 @@ export default function App() {
         <div className="flex items-start justify-between">
           <div>
             <h1 className="text-lg font-semibold text-slate-800 dark:text-white">Protein Design Agent</h1>
-            <p className="mt-1 text-xs text-slate-400 dark:text-[#9a9a9a]">Local · Ollama · Playwright</p>
+            <p className="mt-1 text-xs text-slate-400 dark:text-[#c8c8c8]">Local · Ollama · Playwright</p>
           </div>
           <button
             onClick={toggleDark}
@@ -319,7 +330,7 @@ export default function App() {
         />
 
         <div>
-          <label className="text-xs font-medium text-slate-500 dark:text-[#b5b5b5]">Max debate turns</label>
+          <label className="text-xs font-medium text-slate-500 dark:text-[#d0d0d0]">Max debate turns</label>
           <input
             type="number"
             value={maxTurns}
@@ -332,11 +343,11 @@ export default function App() {
             }
             className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 disabled:opacity-50 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white"
           />
-          <label className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-[#b5b5b5]">
+          <label className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-[#d0d0d0]">
             <input type="checkbox" checked={noLimit} disabled={busy} onChange={(e) => setNoLimit(e.target.checked)} />
             No limit (run until consensus or deadlock)
           </label>
-          <p className="mt-1 text-[11px] text-slate-400 dark:text-[#9a9a9a]">
+          <p className="mt-1 text-[11px] text-slate-400 dark:text-[#c8c8c8]">
             1 turn = every agent speaks once. If they never agree, the Critic closes with why.
           </p>
         </div>
@@ -368,8 +379,8 @@ export default function App() {
         {/* Token usage */}
         {Object.keys(usage).length > 0 && (
           <div className="text-xs">
-            <p className="font-medium text-slate-500 dark:text-[#b5b5b5]">Tokens generated</p>
-            <div className="mt-1 space-y-0.5 text-slate-500 dark:text-[#b5b5b5]">
+            <p className="font-medium text-slate-500 dark:text-[#d0d0d0]">Tokens generated</p>
+            <div className="mt-1 space-y-0.5 text-slate-500 dark:text-[#d0d0d0]">
               {Object.entries(usage).map(([agent, u]) => (
                 <p key={agent} className="flex justify-between">
                   <span className="truncate">{agent}</span>
@@ -380,7 +391,7 @@ export default function App() {
                 <span>Total generated</span>
                 <span className="font-semibold text-slate-800 dark:text-white">{formatTokens(totalGenerated)}</span>
               </p>
-              <p className="flex justify-between text-slate-400 dark:text-[#9a9a9a]">
+              <p className="flex justify-between text-slate-400 dark:text-[#c8c8c8]">
                 <span>Total (incl. prompt)</span>
                 <span>{formatTokens(totalAll)}</span>
               </p>
@@ -388,11 +399,11 @@ export default function App() {
           </div>
         )}
 
-        <div className="mt-auto space-y-1 text-xs text-slate-400 dark:text-[#9a9a9a]">
-          <p className="font-medium text-slate-500 dark:text-[#b5b5b5]">Roster</p>
+        <div className="mt-auto space-y-1 text-xs text-slate-400 dark:text-[#c8c8c8]">
+          <p className="font-medium text-slate-500 dark:text-[#d0d0d0]">Roster</p>
           {roster.map((a, i) => (
             <p key={i}>
-              {i + 1} · {a.name} <span className="text-slate-300 dark:text-[#8a8a8a]">— {a.model}</span>
+              {i + 1} · {a.name} <span className="text-slate-300 dark:text-[#c0c0c0]">— {a.model}</span>
               {a.with_research ? " 🔎" : ""}
               {caps[a.model]?.vision ? " 👁" : ""}
             </p>
