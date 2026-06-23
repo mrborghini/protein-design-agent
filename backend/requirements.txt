@@ -1,0 +1,6 @@
+pyautogen[ollama]
+fastapi
+uvicorn[standard]
+python-multipart
+pypdf
+playwright

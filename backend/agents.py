@@ -1,0 +1,180 @@
+"""Shared Ollama model clients and AutoGen agent factories.
+
+This module is the single source of truth for the model configuration so that
+both the CLI (`agent.py`) and the web app (`backend/main.py`) build agents the
+same way. Agents are config-driven so the web UI can assemble an arbitrary
+roster (different models, extra verifiers) for the consensus debate.
+"""
+import os
+import re
+
+from autogen_agentchat.agents import AssistantAgent
+from autogen_ext.models.ollama import OllamaChatCompletionClient
+from autogen_core.models import ModelInfo
+from autogen_core.tools import FunctionTool
+
+from backend.research import web_research_tool
+
+# Ollama host can be overridden via env var (e.g. when behind Tailscale).
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+# Default context-window size (num_ctx). Bounding this caps the Ollama KV-cache
+# memory and keeps long PDF + tool-call histories from being silently truncated.
+# Overridable via env; the web UI can also set it per request.
+DEFAULT_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "32768"))
+
+# Appended to each agent's system prompt during a consensus debate. Agents emit
+# this exact token when they agree, which triggers TextMentionTermination.
+CONSENSUS_RULE = (
+    "You are one of several expert agents collaborating in a round-table discussion. "
+    "Read the prior messages, build on or critique the current proposal, and add your "
+    "expertise. When you fully agree that the group has reached a correct, well-supported "
+    "conclusion and you have nothing further to add, reply with exactly the single token "
+    "CONSENSUS (uppercase, on its own line) and nothing else."
+)
+
+# These models are function-calling + json capable; family "unknown" keeps the
+# native Ollama client from making provider-specific assumptions. We keep a
+# vision and a non-vision variant: the `vision` flag tells AutoGen whether image
+# content may be sent to this client (only set it for models that support it).
+def _model_info(vision: bool = False) -> ModelInfo:
+    return ModelInfo(
+        vision=vision,
+        function_calling=True,
+        json_output=True,
+        family="unknown",
+    )
+
+
+# Seed roster mirroring the original three-role pipeline. The literature agent
+# gets the web_research (headless Playwright) tool. The Critic targets the first
+# agent by default (`critiques`); it is flagged as the protected default critic.
+DEFAULT_AGENTS: list[dict] = [
+    {
+        "name": "LiteratureAgent",
+        "model": "qwen3.5:9b",
+        "with_research": True,
+        "system_message": (
+            "You extract key facts about protein design from the provided document "
+            "and from the literature. When the question would benefit from recent or "
+            "external information, call the web_research tool with a focused query, then "
+            "synthesize a concise, factual summary grounded in what you found. Always cite "
+            "source titles/URLs you used."
+        ),
+    },
+    {
+        "name": "HypothesisAgent",
+        "model": "gemma4:12b",
+        "with_research": False,
+        "system_message": "You generate actionable, testable hypotheses for protein design.",
+    },
+    {
+        "name": "Critic",
+        "model": "gpt-oss:latest",
+        "with_research": False,
+        "is_critic": True,
+        "critiques": ["LiteratureAgent"],
+        "system_message": "You critique hypotheses based strictly on the established facts.",
+    },
+]
+
+
+def critique_directive(targets: list[str] | None) -> str:
+    """Directive appended to a critic's prompt so it focuses on specific agents."""
+    names = [t for t in (targets or []) if t]
+    if not names:
+        return ""
+    joined = ", ".join(names)
+    return (
+        f"\n\nSpecifically critique the contributions of: {joined}. Focus your critique "
+        "on their reasoning, claims, and any unsupported assumptions."
+    )
+
+
+def _client(model: str, num_ctx: int, vision: bool = False) -> OllamaChatCompletionClient:
+    # num_ctx is passed inside `options`, matching the Ollama /api/chat schema
+    # (https://docs.ollama.com/). Constructing a client is cheap (no connection),
+    # so we build per request to honour the caller's num_ctx.
+    return OllamaChatCompletionClient(
+        model=model,
+        host=OLLAMA_HOST,
+        model_info=_model_info(vision),
+        options={"num_ctx": num_ctx},
+    )
+
+
+def safe_name(name: str) -> str:
+    """AutoGen agent names must be valid identifiers; sanitize UI-supplied names."""
+    cleaned = re.sub(r"\W+", "_", name).strip("_")
+    if not cleaned or not cleaned[0].isalpha():
+        cleaned = "Agent_" + cleaned
+    return cleaned
+
+
+def build_agent(
+    name: str,
+    model: str,
+    system_message: str,
+    num_ctx: int = DEFAULT_NUM_CTX,
+    with_research: bool = False,
+    consensus: bool = False,
+    vision: bool = False,
+    critiques: list[str] | None = None,
+) -> AssistantAgent:
+    """Generic agent factory used by both the CLI and the consensus debate."""
+    sys = system_message + critique_directive(critiques)
+    sys += f"\n\n{CONSENSUS_RULE}" if consensus else ""
+    return AssistantAgent(
+        name=safe_name(name),
+        model_client=_client(model, num_ctx, vision=vision),
+        tools=[web_research_tool] if with_research else [],
+        reflect_on_tool_use=with_research,
+        system_message=sys,
+    )
+
+
+def build_roster(
+    agents: list[dict] | None = None,
+    num_ctx: int = DEFAULT_NUM_CTX,
+    consensus: bool = True,
+    vision_models: set[str] | None = None,
+) -> list[AssistantAgent]:
+    """Build the list of agents for the debate from config (or the defaults).
+
+    `num_ctx` is the fallback context window; each config may override it with its
+    own `num_ctx`. `vision_models` is the set of model names known to support image
+    input — agents on those models are built with a vision-enabled client.
+    """
+    configs = agents if agents else DEFAULT_AGENTS
+    vision_models = vision_models or set()
+    return [
+        build_agent(
+            name=c["name"],
+            model=c["model"],
+            system_message=c.get("system_message", ""),
+            num_ctx=int(c.get("num_ctx") or num_ctx),
+            with_research=bool(c.get("with_research", False)),
+            consensus=consensus,
+            vision=c["model"] in vision_models,
+            critiques=c.get("critiques") if c.get("is_critic") else None,
+        )
+        for c in configs
+    ]
+
+
+# --- Thin wrappers for the CLI (agent.py), preserving its one-shot behaviour --- #
+def build_literature_agent(
+    tools: list[FunctionTool] | None = None, num_ctx: int = DEFAULT_NUM_CTX
+) -> AssistantAgent:
+    c = DEFAULT_AGENTS[0]
+    return build_agent(c["name"], c["model"], c["system_message"], num_ctx, with_research=True)
+
+
+def build_hypothesis_agent(num_ctx: int = DEFAULT_NUM_CTX) -> AssistantAgent:
+    c = DEFAULT_AGENTS[1]
+    return build_agent(c["name"], c["model"], c["system_message"], num_ctx)
+
+
+def build_critic_agent(num_ctx: int = DEFAULT_NUM_CTX) -> AssistantAgent:
+    c = DEFAULT_AGENTS[2]
+    return build_agent(c["name"], c["model"], c["system_message"], num_ctx)
