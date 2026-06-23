@@ -1,1 +1,1 @@
-pyautogen
+pyautogen[ollama]

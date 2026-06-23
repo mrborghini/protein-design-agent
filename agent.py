@@ -2,15 +2,27 @@ import os
 import sys
 from autogen import ConversableAgent
 
-# Configure Ollama endpoints
-ollama_url = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434/v1")
+# Configure Ollama endpoints using the native Ollama API configuration
+ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
 config_qwen = {
-    "config_list": [{"model": "qwen2.5:latest", "base_url": ollama_url, "api_key": "ollama"}]
+    "config_list": [
+        {
+            "model": "qwen2.5:latest",
+            "api_type": "ollama",
+            "client_host": ollama_host,
+        }
+    ]
 }
 
 config_deepseek = {
-    "config_list": [{"model": "deepseek-r1:latest", "base_url": ollama_url, "api_key": "ollama"}]
+    "config_list": [
+        {
+            "model": "deepseek-r1:latest",
+            "api_type": "ollama",
+            "client_host": ollama_host,
+        }
+    ]
 }
 
 # 1. Literature Agent (RAG Retriever)
