@@ -21,13 +21,13 @@ model_info = ModelInfo(
 )
 
 qwen_client = OllamaChatCompletionClient(
-    model="qwen3.5:9b",
+    model="qwen3.5:latest",
     host=ollama_host,
     model_info=model_info
 )
 
 gemma_client = OllamaChatCompletionClient(
-    model="gemma4:12b",
+    model="gemma4:latest",
     host=ollama_host,
     model_info=model_info
 )
