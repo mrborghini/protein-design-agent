@@ -10,7 +10,11 @@ from autogen_core import CancellationToken
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--host', default='http://localhost:11434', help='Ollama host URL')
-args, _ = parser.parse_known_args()
+args, unknown_args = parser.parse_known_args()
+user_prompt = " ".join(unknown_args)
+if not user_prompt:
+    user_prompt = "Summarize recent findings on RFdiffusion for binder design."
+
 ollama_host = args.host
 
 model_info = ModelInfo(
@@ -63,7 +67,7 @@ async def main():
     token = CancellationToken()
     try:
         reply = await literature_agent.on_messages(
-            [TextMessage(content="Summarize recent findings on RFdiffusion for binder design.", source="user")],
+            [TextMessage(content=user_prompt, source="user")],
             cancellation_token=token
         )
         print(f"\n[Literature Agent Summary]:\n{reply.chat_message.content}")
