@@ -32,6 +32,13 @@ deepseek_client = OllamaChatCompletionClient(
     model_info=model_info
 )
 
+
+gpt_oss_client = OllamaChatCompletionClient(
+    model="gpt-oss",
+    host=ollama_host,
+    model_info=model_info
+)
+
 async def main():
     literature_agent = AssistantAgent(
         name="LiteratureAgent",
