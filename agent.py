@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 import asyncio
@@ -7,7 +8,10 @@ from autogen_ext.models.ollama import OllamaChatCompletionClient
 from autogen_core.models import ModelInfo
 from autogen_core import CancellationToken
 
-ollama_host = os.environ.get("OLLAMA_HOST", "http://100.66.23.9:11434")
+parser = argparse.ArgumentParser()
+parser.add_argument('--host', default='http://localhost:11434', help='Ollama host URL')
+args, _ = parser.parse_known_args()
+ollama_host = args.host
 
 model_info = ModelInfo(
     vision=False,
