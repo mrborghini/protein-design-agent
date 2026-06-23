@@ -32,7 +32,12 @@ function conversationToMarkdown(items: ChatItem[]): string {
   const lines: string[] = ["# Protein Design Agent — conversation\n"];
   for (const it of items) {
     if (it.kind === "user") lines.push(`## You\n\n${it.text}\n`);
-    else if (it.kind === "agent") lines.push(`### ${it.agent}\n\n${it.content}\n`);
+    else if (it.kind === "agent") {
+      let s = `### ${it.agent}\n`;
+      if (it.thinking && it.thinking.trim())
+        s += `\n<details><summary>💭 Thinking</summary>\n\n${it.thinking}\n\n</details>\n`;
+      lines.push(`${s}\n${it.content}\n`);
+    }
     else if (it.kind === "research")
       lines.push(`> 🔎 Research: ${it.query}\n>\n` + it.sources.map((s) => `> - [${s.title || s.url}](${s.url})`).join("\n") + "\n");
     else if (it.kind === "consensus") lines.push(`_Consensus reached ✓_\n`);
@@ -74,6 +79,9 @@ export default function App() {
   });
   const [showRoster, setShowRoster] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Tracks the agent item currently being streamed into (deltas/thinking).
+  const streamRef = useRef<{ agent: string; id: number } | null>(null);
+  const idRef = useRef(0);
 
   // Pull config defaults + available models from the backend.
   useEffect(() => {
@@ -116,6 +124,20 @@ export default function App() {
 
   function push(item: ChatItem) {
     setItems((prev) => [...prev, item]);
+  }
+
+  // Find/create the agent item being streamed; subsequent deltas append to it.
+  function ensureStreamItem(agent: string): number {
+    if (streamRef.current && streamRef.current.agent === agent) return streamRef.current.id;
+    const id = ++idRef.current;
+    streamRef.current = { agent, id };
+    setItems((prev) => [...prev, { kind: "agent", agent, content: "", thinking: "", id }]);
+    return id;
+  }
+  function appendStream(id: number, field: "content" | "thinking", delta: string) {
+    setItems((prev) =>
+      prev.map((it) => (it.kind === "agent" && it.id === id ? { ...it, [field]: (it[field] ?? "") + delta } : it))
+    );
   }
 
   function addUsage(agent: string, prompt: number, completion: number) {
@@ -163,6 +185,7 @@ export default function App() {
     push({ kind: "user", text, images: images.length ? images : undefined });
     setBusy(true);
     setStatus("Starting…");
+    streamRef.current = null;
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -176,8 +199,21 @@ export default function App() {
             if (e.stage === "consensus") push({ kind: "consensus" });
           } else if (e.type === "research")
             push({ kind: "research", query: e.query, sources: e.sources, screenshot: e.screenshot_b64 });
-          else if (e.type === "message") push({ kind: "agent", agent: e.agent, content: e.content });
-          else if (e.type === "usage") addUsage(e.agent, e.prompt_tokens, e.completion_tokens);
+          else if (e.type === "delta") appendStream(ensureStreamItem(e.agent), "content", e.content);
+          else if (e.type === "thinking_delta") appendStream(ensureStreamItem(e.agent), "thinking", e.content);
+          else if (e.type === "message") {
+            // Finalize the streamed item with the authoritative (consensus-stripped) text.
+            const cur = streamRef.current;
+            if (cur && cur.agent === e.agent) {
+              const id = cur.id;
+              setItems((prev) =>
+                prev.map((it) => (it.kind === "agent" && it.id === id ? { ...it, content: e.content } : it))
+              );
+              streamRef.current = null;
+            } else {
+              push({ kind: "agent", agent: e.agent, content: e.content });
+            }
+          } else if (e.type === "usage") addUsage(e.agent, e.prompt_tokens, e.completion_tokens);
           else if (e.type === "error") push({ kind: "error", text: e.text });
         },
         controller.signal

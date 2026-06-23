@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from autogen_agentchat.messages import TextMessage, MultiModalMessage
+from autogen_agentchat.messages import TextMessage, MultiModalMessage, ModelClientStreamingChunkEvent
 from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_agentchat.conditions import TextMentionTermination, MaxMessageTermination
 from autogen_agentchat.base import TaskResult
@@ -98,16 +98,16 @@ def _fetch_models_sync() -> list[str]:
     return sorted(m["name"] for m in data.get("models", []))
 
 
-# Per-model vision capability, cached. None = unknown (older Ollama without the
-# `capabilities` field); True/False once /api/show reports it.
-_vision_cache: dict[str, bool | None] = {}
+# Per-model capability list, cached. None = unknown (older Ollama without the
+# `capabilities` field); a list once /api/show reports it.
+_caps_cache: dict[str, list[str] | None] = {}
 
 
-def _model_vision_sync(name: str) -> bool | None:
-    """Query Ollama /api/show for a model's capabilities; True if it supports vision."""
-    if name in _vision_cache:
-        return _vision_cache[name]
-    vision: bool | None = None
+def _model_caps_sync(name: str) -> list[str] | None:
+    """Query Ollama /api/show for a model's capabilities list (e.g. vision, thinking)."""
+    if name in _caps_cache:
+        return _caps_cache[name]
+    caps: list[str] | None = None
     try:
         body = json.dumps({"model": name}).encode("utf-8")
         req = urllib.request.Request(
@@ -115,17 +115,26 @@ def _model_vision_sync(name: str) -> bool | None:
         )
         with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 - local Ollama
             info = json.loads(resp.read().decode("utf-8"))
-        caps = info.get("capabilities")
-        if isinstance(caps, list):
-            vision = "vision" in caps
+        value = info.get("capabilities")
+        if isinstance(value, list):
+            caps = value
     except Exception:  # noqa: BLE001 - capability stays unknown
-        vision = None
-    _vision_cache[name] = vision
-    return vision
+        caps = None
+    _caps_cache[name] = caps
+    return caps
+
+
+def _has_cap(name: str, cap: str) -> bool | None:
+    caps = _model_caps_sync(name)
+    return None if caps is None else (cap in caps)
 
 
 def _vision_models_sync(names: list[str]) -> set[str]:
-    return {n for n in names if _model_vision_sync(n) is True}
+    return {n for n in names if _has_cap(n, "vision") is True}
+
+
+def _thinking_models_sync(names: list[str]) -> set[str]:
+    return {n for n in names if _has_cap(n, "thinking") is True}
 
 
 @app.get("/api/models")
@@ -140,10 +149,15 @@ async def models():
 
 @app.get("/api/models/capabilities")
 async def model_capabilities():
-    """Report per-model vision capability (via Ollama /api/show)."""
+    """Report per-model vision + thinking capability (via Ollama /api/show)."""
+    def collect() -> dict:
+        out = {}
+        for n in _fetch_models_sync():
+            out[n] = {"vision": _has_cap(n, "vision"), "thinking": _has_cap(n, "thinking")}
+        return out
+
     try:
-        names = await asyncio.to_thread(_fetch_models_sync)
-        caps = await asyncio.to_thread(lambda: {n: {"vision": _model_vision_sync(n)} for n in names})
+        caps = await asyncio.to_thread(collect)
         return {"capabilities": caps}
     except Exception as e:  # noqa: BLE001
         return {"capabilities": {}, "error": str(e)}
@@ -184,6 +198,7 @@ async def _debate(
     max_turns: int,
     images: list[str] | None = None,
     vision_models: set[str] | None = None,
+    thinking_models: set[str] | None = None,
 ) -> None:
     """Round-robin consensus debate. Streams each agent turn onto `queue`."""
     try:
@@ -213,7 +228,10 @@ async def _debate(
             # image content; only true vision models will actually use it.
             build_vision = roster_models
 
-        roster = build_roster(agents_cfg, num_ctx=num_ctx, consensus=True, vision_models=build_vision)
+        roster = build_roster(
+            agents_cfg, num_ctx=num_ctx, consensus=True,
+            vision_models=build_vision, thinking_models=thinking_models or set(),
+        )
         await queue.put(
             {"type": "status", "stage": "debate", "text": f"Debating with {len(roster)} agents (max {max_turns} turns)…"}
         )
@@ -248,6 +266,12 @@ async def _debate(
         async for msg in team.run_stream(task=task, cancellation_token=token):
             if isinstance(msg, TaskResult):
                 break
+            # Real-time answer tokens. (Thinking deltas are pushed straight onto the
+            # queue by the streaming client, tagged as "thinking_delta".)
+            if isinstance(msg, ModelClientStreamingChunkEvent) and msg.source != "user":
+                if msg.content:
+                    await queue.put({"type": "delta", "agent": msg.source, "content": msg.content})
+                continue
             if isinstance(msg, TextMessage) and msg.source != "user":
                 content_text = msg.content or ""
                 if "consensus" in content_text.lower():
@@ -290,17 +314,22 @@ async def chat(req: ChatRequest):
     for a in agents_cfg or []:
         a["num_ctx"] = clamp_num_ctx(a.get("num_ctx") or num_ctx)
 
-    # Only resolve vision capability when an image is actually attached.
+    roster_models = [c["model"] for c in (agents_cfg or DEFAULT_AGENTS)]
+    # Thinking capability is resolved every request (cheap + cached) so reasoning
+    # models stream a separate thinking channel; vision only when an image is attached.
+    thinking_models = await asyncio.to_thread(_thinking_models_sync, roster_models)
     vision_models: set[str] = set()
     if req.images:
-        roster_models = [c["model"] for c in (agents_cfg or DEFAULT_AGENTS)]
         vision_models = await asyncio.to_thread(_vision_models_sync, roster_models)
 
-    # Set the sink BEFORE creating the task so the task (and the research tool
-    # running inside it) inherits this client's queue via contextvars.
+    # Set the sink BEFORE creating the task so the task (and the research tool +
+    # streaming client running inside it) inherit this client's queue via contextvars.
     research_sink.set(queue)
     task = asyncio.create_task(
-        _debate(req.message, agents_cfg, queue, token, num_ctx, max_turns, req.images, vision_models)
+        _debate(
+            req.message, agents_cfg, queue, token, num_ctx, max_turns,
+            req.images, vision_models, thinking_models,
+        )
     )
 
     async def event_stream():

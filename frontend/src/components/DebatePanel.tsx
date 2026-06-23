@@ -27,7 +27,8 @@ export default function DebatePanel({
       </summary>
       <div className="space-y-3 px-3 pb-3">
         {items.map((item, i) => {
-          if (item.kind === "agent") return <AgentMessage key={i} agent={item.agent} content={item.content} />;
+          if (item.kind === "agent")
+            return <AgentMessage key={i} agent={item.agent} content={item.content} thinking={item.thinking} />;
           if (item.kind === "research")
             return <ResearchTrace key={i} query={item.query} sources={item.sources} screenshot={item.screenshot} />;
           if (item.kind === "error")

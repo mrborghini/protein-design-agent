@@ -4,7 +4,7 @@ import { fileToDataURL } from "../lib/download";
 
 export type ChatItem =
   | { kind: "user"; text: string; images?: string[] }
-  | { kind: "agent"; agent: string; content: string }
+  | { kind: "agent"; agent: string; content: string; thinking?: string; id?: number }
   | { kind: "research"; query: string; sources: { title: string; url: string }[]; screenshot: string }
   | { kind: "consensus" }
   | { kind: "error"; text: string };

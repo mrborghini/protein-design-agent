@@ -9,11 +9,11 @@ import os
 import re
 
 from autogen_agentchat.agents import AssistantAgent
-from autogen_ext.models.ollama import OllamaChatCompletionClient
 from autogen_core.models import ModelInfo
 from autogen_core.tools import FunctionTool
 
 from backend.research import web_research_tool
+from backend.streaming_client import StreamingOllamaChatCompletionClient
 
 # Ollama host can be overridden via env var (e.g. when behind Tailscale).
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
@@ -91,15 +91,24 @@ def critique_directive(targets: list[str] | None) -> str:
     )
 
 
-def _client(model: str, num_ctx: int, vision: bool = False) -> OllamaChatCompletionClient:
+def _client(
+    model: str,
+    num_ctx: int,
+    vision: bool = False,
+    agent_name: str = "",
+    enable_thinking: bool = False,
+) -> StreamingOllamaChatCompletionClient:
     # num_ctx is passed inside `options`, matching the Ollama /api/chat schema
     # (https://docs.ollama.com/). Constructing a client is cheap (no connection),
-    # so we build per request to honour the caller's num_ctx.
-    return OllamaChatCompletionClient(
+    # so we build per request to honour the caller's num_ctx. The streaming client
+    # surfaces token deltas and (for thinking models) a separate reasoning channel.
+    return StreamingOllamaChatCompletionClient(
         model=model,
         host=OLLAMA_HOST,
         model_info=_model_info(vision),
         options={"num_ctx": num_ctx},
+        agent_name=agent_name,
+        enable_thinking=enable_thinking,
     )
 
 
@@ -119,16 +128,19 @@ def build_agent(
     with_research: bool = False,
     consensus: bool = False,
     vision: bool = False,
+    enable_thinking: bool = False,
     critiques: list[str] | None = None,
 ) -> AssistantAgent:
     """Generic agent factory used by both the CLI and the consensus debate."""
     sys = system_message + critique_directive(critiques)
     sys += f"\n\n{CONSENSUS_RULE}" if consensus else ""
+    safe = safe_name(name)
     return AssistantAgent(
-        name=safe_name(name),
-        model_client=_client(model, num_ctx, vision=vision),
+        name=safe,
+        model_client=_client(model, num_ctx, vision=vision, agent_name=safe, enable_thinking=enable_thinking),
         tools=[web_research_tool] if with_research else [],
         reflect_on_tool_use=with_research,
+        model_client_stream=True,  # surface token-by-token deltas to the UI
         system_message=sys,
     )
 
@@ -138,15 +150,18 @@ def build_roster(
     num_ctx: int = DEFAULT_NUM_CTX,
     consensus: bool = True,
     vision_models: set[str] | None = None,
+    thinking_models: set[str] | None = None,
 ) -> list[AssistantAgent]:
     """Build the list of agents for the debate from config (or the defaults).
 
     `num_ctx` is the fallback context window; each config may override it with its
     own `num_ctx`. `vision_models` is the set of model names known to support image
-    input — agents on those models are built with a vision-enabled client.
+    input. `thinking_models` is the set known to support reasoning — those agents get
+    `think=True` and stream a separate thinking channel.
     """
     configs = agents if agents else DEFAULT_AGENTS
     vision_models = vision_models or set()
+    thinking_models = thinking_models or set()
     return [
         build_agent(
             name=c["name"],
@@ -156,6 +171,7 @@ def build_roster(
             with_research=bool(c.get("with_research", False)),
             consensus=consensus,
             vision=c["model"] in vision_models,
+            enable_thinking=c["model"] in thinking_models,
             critiques=c.get("critiques") if c.get("is_critic") else None,
         )
         for c in configs
