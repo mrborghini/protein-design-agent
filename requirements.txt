@@ -1,1 +1,2 @@
 pyautogen[ollama]
+autogen-ext[ollama]
