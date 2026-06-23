@@ -44,18 +44,19 @@ gpt_oss_client = OllamaChatCompletionClient(
 )
 
 
-def web_search(query: str) -> str:
-    """Search the web using SearXNG."""
-    import urllib.request, urllib.parse, json
+def web_scrape(url: str) -> str:
+    """Scrape text from a webpage using Playwright."""
+    from playwright.sync_api import sync_playwright
     try:
-        url = f"http://localhost:8080/search?q={urllib.parse.quote(query)}&format=json"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode())
-            results = [f"{r.get('title', '')}: {r.get('content', '')}" for r in data.get('results', [])[:3]]
-            return "\n".join(results) if results else "No results found."
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, timeout=15000)
+            text = page.locator("body").inner_text()
+            browser.close()
+            return text[:3000]
     except Exception as e:
-        return f"Search failed: {e}"
+        return f"Scrape failed: {e}"
 
 def read_file(filepath: str) -> str:
     """Read text from a local file."""
@@ -79,7 +80,7 @@ async def main():
     literature_agent = AssistantAgent(
         name="LiteratureAgent",
         model_client=qwen_client,
-        tools=[web_search, read_file, save_file],
+        tools=[web_scrape, read_file, save_file],
         system_message="You extract key facts about protein design. You can search the web and read files."
     )
     
