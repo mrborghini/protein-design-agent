@@ -50,19 +50,28 @@ class StreamingOllamaChatCompletionClient(OllamaChatCompletionClient):
         if queue is not None:
             queue.put_nowait({"type": "thinking_delta", "agent": self._agent_name, "content": delta})
 
-    def _emit_thinking_usage(self, thinking_tokens: int) -> None:
-        """Push the per-turn thinking-token estimate onto the active SSE queue, if one is set.
+    def _emit_usage(self, prompt_tokens: int, completion_tokens: int, thinking_tokens: int) -> None:
+        """Push one combined per-model-call usage event onto the active SSE queue, if one is set.
 
-        Ollama reports only `eval_count` (total generated tokens, thinking INCLUDED) — there is
-        no separate thinking count — so this is an estimate of the thinking share (see
-        ``create_stream``). Skipped when zero (e.g. non-thinking turns) to avoid noise.
+        prompt/completion/thinking are all derived from the SAME Ollama eval (see ``create_stream``):
+        `completion_tokens` is `eval_count` (thinking INCLUDED) and `thinking_tokens` is the clamped
+        estimate of its thinking share (always ≤ completion). Emitting all three together — per call,
+        not per final message — keeps them consistent so answer-only (completion − thinking) can't go
+        negative, and records completion even on empty-answer (thinking-only) turns. Skipped only when
+        there's nothing to record.
         """
-        if thinking_tokens <= 0:
+        if prompt_tokens <= 0 and completion_tokens <= 0:
             return
         queue = research_sink.get(None)
         if queue is not None:
             queue.put_nowait(
-                {"type": "usage_thinking", "agent": self._agent_name, "thinking_tokens": thinking_tokens}
+                {
+                    "type": "usage",
+                    "agent": self._agent_name,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "thinking_tokens": thinking_tokens,
+                }
             )
 
     async def create_stream(
@@ -142,17 +151,18 @@ class StreamingOllamaChatCompletionClient(OllamaChatCompletionClient):
 
         prompt_tokens = chunk.prompt_eval_count if (chunk and chunk.prompt_eval_count) else 0
 
+        # eval_count covers every generated token of this response — answer text, reasoning, AND
+        # tool-call arguments — so count it regardless of which the model produced this call.
+        completion_tokens = chunk.eval_count if (chunk and chunk.eval_count) else 0
+
         content: Union[str, List[FunctionCall]]
         thought: Optional[str] = None
         if len(content_chunks) > 0 and len(full_tool_calls) > 0:
             content = full_tool_calls
             thought = "".join(content_chunks)
-            completion_tokens = chunk.eval_count if (chunk and chunk.eval_count) else 0
         elif len(content_chunks) >= 1:
             content = "".join(content_chunks)
-            completion_tokens = chunk.eval_count if (chunk and chunk.eval_count) else 0
         else:
-            completion_tokens = 0
             content = full_tool_calls
 
         # Ollama's `eval_count` (completion_tokens) bundles thinking + answer with no split, so
@@ -164,7 +174,7 @@ class StreamingOllamaChatCompletionClient(OllamaChatCompletionClient):
             thinking_tokens = max(0, min(thinking_tokens, completion_tokens))
         else:
             thinking_tokens = 0
-        self._emit_thinking_usage(thinking_tokens)
+        self._emit_usage(prompt_tokens, completion_tokens, thinking_tokens)
 
         usage = RequestUsage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
         result = CreateResult(

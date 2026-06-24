@@ -13,6 +13,9 @@ const TURNS_KEY = "pda-maxturns";
 const CTX_KEY = "pda-numctx";
 const NOLIMIT_KEY = "pda-nolimit";
 const POLL_MS = 2000;
+// Rough chars-per-token heuristic for the live (in-flight) usage estimate, replaced by
+// Ollama's exact eval_count when the turn's `usage` event arrives.
+const CHARS_PER_TOKEN = 4;
 
 // `completion` is Ollama's eval_count (output incl. thinking); `thinking` is the estimated
 // share of it, so answer-only output = completion - thinking. See backend/streaming_client.py.
@@ -65,6 +68,10 @@ export default function App() {
   const [pdfName, setPdfName] = useState("");
   const [dark, toggleDark] = useDarkMode();
   const [usage, setUsage] = useState<Usage>({});
+  // Live, in-flight token estimate for the agent currently streaming (turns are
+  // sequential, so one at a time). Merged into the displayed usage and cleared when the
+  // authoritative `usage` event lands. See displayUsage below.
+  const [live, setLive] = useState<{ agent: string; answerChars: number; thinkingChars: number } | null>(null);
 
   const [numCtx, setNumCtx] = useState(() => Number(localStorage.getItem(CTX_KEY)) || FALLBACK.numCtx);
   const [ctxBounds, setCtxBounds] = useState({ min: FALLBACK.ctxMin, max: FALLBACK.ctxMax });
@@ -227,6 +234,14 @@ export default function App() {
     });
   }
 
+  // Grow the in-flight estimate as text streams. Resets when a new agent starts speaking.
+  function bumpLive(agent: string, field: "answerChars" | "thinkingChars", chars: number) {
+    setLive((prev) => {
+      const base = prev && prev.agent === agent ? prev : { agent, answerChars: 0, thinkingChars: 0 };
+      return { ...base, [field]: base[field] + chars };
+    });
+  }
+
   // Reset ALL settings (roster + context + turns + no-limit) to defaults, after a
   // confirmation warning. Persisted overrides are removed. Does not touch the chat.
   function resetSettings() {
@@ -270,6 +285,7 @@ export default function App() {
     }
     setItems([]);
     setUsage({});
+    setLive(null);
   }
 
   function stopDebate() {
@@ -298,8 +314,13 @@ export default function App() {
             else if (e.stage === "closed") push({ kind: "closed" });
           } else if (e.type === "research")
             push({ kind: "research", query: e.query, sources: e.sources, screenshot: e.screenshot_b64 });
-          else if (e.type === "delta") appendStream(ensureStreamItem(e.agent, e.round), "content", e.content);
-          else if (e.type === "thinking_delta") appendStream(ensureStreamItem(e.agent), "thinking", e.content);
+          else if (e.type === "delta") {
+            appendStream(ensureStreamItem(e.agent, e.round), "content", e.content);
+            bumpLive(e.agent, "answerChars", e.content.length);
+          } else if (e.type === "thinking_delta") {
+            appendStream(ensureStreamItem(e.agent), "thinking", e.content);
+            bumpLive(e.agent, "thinkingChars", e.content.length);
+          }
           else if (e.type === "message") {
             // Finalize the streamed item with the authoritative (consensus-stripped) text + round.
             const cur = streamRef.current;
@@ -316,9 +337,13 @@ export default function App() {
             } else {
               push({ kind: "agent", agent: e.agent, content: e.content, round: e.round });
             }
-          } else if (e.type === "usage") addUsage(e.agent, e.prompt_tokens, e.completion_tokens);
-          else if (e.type === "usage_thinking") addThinkingUsage(e.agent, e.thinking_tokens);
-          else if (e.type === "error") push({ kind: "error", text: e.text });
+          } else if (e.type === "usage") {
+            // One combined per-call event (prompt/completion/thinking from the same eval).
+            // Exact counts arrived — drop the live estimate so we don't double-count.
+            addUsage(e.agent, e.prompt_tokens, e.completion_tokens);
+            addThinkingUsage(e.agent, e.thinking_tokens);
+            setLive((prev) => (prev && prev.agent === e.agent ? null : prev));
+          } else if (e.type === "error") push({ kind: "error", text: e.text });
         },
         controller.signal
       );
@@ -335,14 +360,30 @@ export default function App() {
       abortRef.current = null;
       localStreamingRef.current = false;
       setStreaming(false);
+      setLive(null);
     }
   }
 
-  const usageVals = Object.values(usage);
+  // Merge the live in-flight estimate onto committed usage so the panel ticks up while an
+  // agent streams (prompt/input isn't streamed, so it stays committed-only until turn end).
+  const displayUsage: Usage = { ...usage };
+  if (live) {
+    const cur = displayUsage[live.agent] ?? { prompt: 0, completion: 0, thinking: 0 };
+    const estComp = Math.round((live.answerChars + live.thinkingChars) / CHARS_PER_TOKEN);
+    const estThink = Math.round(live.thinkingChars / CHARS_PER_TOKEN);
+    displayUsage[live.agent] = {
+      prompt: cur.prompt,
+      completion: cur.completion + estComp,
+      thinking: cur.thinking + estThink,
+    };
+  }
+
+  const usageVals = Object.values(displayUsage);
   const totalInput = usageVals.reduce((s, u) => s + u.prompt, 0);
-  const totalThinking = usageVals.reduce((s, u) => s + u.thinking, 0);
   const totalOutputIncl = usageVals.reduce((s, u) => s + u.completion, 0); // eval_count (incl. thinking)
-  const totalOutput = totalOutputIncl - totalThinking; // answer-only (approx)
+  // answer-only (approx). The backend now records thinking ≤ completion from a single per-call event,
+  // so this should be ≥ 0 already; Math.max keeps it defensive against estimate rounding.
+  const totalOutput = usageVals.reduce((s, u) => s + Math.max(0, u.completion - u.thinking), 0);
 
   return (
     <div className="flex h-full text-slate-900 dark:text-white">
@@ -421,7 +462,7 @@ export default function App() {
         {/* Token usage. Columns: input (prompt), output (answer-only), output incl. thinking.
             Ollama reports only input + total-output (thinking bundled in), so the answer/thinking
             split is an estimate — flagged "approx" below. */}
-        {Object.keys(usage).length > 0 && (
+        {Object.keys(displayUsage).length > 0 && (
           <div className="text-xs">
             <p className="font-medium text-slate-500 dark:text-[#d0d0d0]">Tokens</p>
             <div className="mt-1 grid grid-cols-[1fr_auto_auto_auto] gap-x-2 gap-y-0.5 text-right text-slate-500 dark:text-[#d0d0d0]">
@@ -429,16 +470,28 @@ export default function App() {
               <span title="Input tokens (prompt)">In</span>
               <span title="Output tokens — answer only (approx)">Out</span>
               <span title="Output tokens incl. thinking">+think</span>
-              {Object.entries(usage).map(([agent, u]) => (
-                <Fragment key={agent}>
-                  <span className="truncate text-left">{agent}</span>
-                  <span>{formatTokens(u.prompt)}</span>
-                  <span className="font-medium text-slate-700 dark:text-[#ededed]">
-                    {formatTokens(u.completion - u.thinking)}
-                  </span>
-                  <span>{formatTokens(u.completion)}</span>
-                </Fragment>
-              ))}
+              {Object.entries(displayUsage).map(([agent, u]) => {
+                const isLive = live?.agent === agent;
+                const liveTitle = isLive ? "Live estimate — finalized when the turn completes" : undefined;
+                return (
+                  <Fragment key={agent}>
+                    <span className="truncate text-left">
+                      {agent}
+                      {isLive && <span title={liveTitle} className="text-sky-500"> ●</span>}
+                    </span>
+                    <span>{formatTokens(u.prompt)}</span>
+                    <span
+                      className={`font-medium text-slate-700 dark:text-[#ededed] ${isLive ? "italic" : ""}`}
+                      title={liveTitle}
+                    >
+                      {formatTokens(Math.max(0, u.completion - u.thinking))}
+                    </span>
+                    <span className={isLive ? "italic" : ""} title={liveTitle}>
+                      {formatTokens(u.completion)}
+                    </span>
+                  </Fragment>
+                );
+              })}
               <span className="col-span-4 border-t border-slate-200 dark:border-[#4a4a4a]" />
               <span className="text-left font-medium text-slate-600 dark:text-[#e0e0e0]">Total</span>
               <span className="font-medium text-slate-700 dark:text-[#ededed]">{formatTokens(totalInput)}</span>

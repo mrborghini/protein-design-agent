@@ -7,8 +7,7 @@ export type StreamEvent =
   | { type: "message"; agent: string; content: string; round?: number }
   | { type: "delta"; agent: string; content: string; round?: number }
   | { type: "thinking_delta"; agent: string; content: string }
-  | { type: "usage"; agent: string; prompt_tokens: number; completion_tokens: number }
-  | { type: "usage_thinking"; agent: string; thinking_tokens: number }
+  | { type: "usage"; agent: string; prompt_tokens: number; completion_tokens: number; thinking_tokens: number }
   | { type: "error"; text: string }
   | { type: "done" };
 

@@ -262,9 +262,10 @@ async def _forward(msg, queue: asyncio.Queue, round_no: int | None = None) -> No
     """Emit one agent event onto the SSE queue (shared by the debate + closing turn).
 
     Streaming chunks become `delta`s; complete agent messages become `message`s
-    (with the consensus token stripped for display) plus a `usage` event. When
-    `round_no` is given (the main debate loop), it's attached so the UI can show a
-    round badge; the closing/clarification messages pass None (no round).
+    (with the consensus token stripped for display). Token usage is emitted separately
+    by the streaming client (one combined `usage` event per model call), so it's not
+    handled here. When `round_no` is given (the main debate loop), it's attached so the
+    UI can show a round badge; the closing/clarification messages pass None (no round).
     """
     if isinstance(msg, ModelClientStreamingChunkEvent) and msg.source != "user":
         if msg.content:
@@ -287,14 +288,6 @@ async def _forward(msg, queue: asyncio.Queue, round_no: int | None = None) -> No
         if round_no is not None:
             ev["round"] = round_no
         await queue.put(ev)
-        usage = getattr(msg, "models_usage", None)
-        if usage is not None:
-            await queue.put({
-                "type": "usage",
-                "agent": msg.source,
-                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-            })
 
 
 async def _debate(
@@ -526,8 +519,9 @@ def _record_event(event: dict, thinking: dict[str, str]) -> None:
         elif event.get("stage") == "closed":
             session.append_item({"kind": "closed"})
     elif t == "usage":
+        # One combined per-call event (see streaming_client._emit_usage): prompt/completion/thinking
+        # all from the same eval, so thinking ≤ completion and completion is always recorded.
         session.add_usage(event["agent"], event.get("prompt_tokens", 0), event.get("completion_tokens", 0))
-    elif t == "usage_thinking":
         session.add_thinking_usage(event["agent"], event.get("thinking_tokens", 0))
     elif t == "error":
         session.append_item({"kind": "error", "text": event.get("text", "")})
