@@ -360,8 +360,11 @@ async def _debate(
         task_text = (
             f"Current date (UTC): {today}.\n\n"
             f"{doc_prefix}User question: {message}\n\n"
-            "Collaborate to produce a single agreed answer. Use web_research when external "
-            "facts would help, and signal agreement exactly as your instructions describe."
+            "Collaborate to produce a single agreed answer. If the answer could depend on "
+            "information that changes over time, do not rely on training knowledge that may "
+            f"be stale — use web_research with the current date ({today}) or recency terms in "
+            "the query to confirm the current facts. Signal agreement exactly as your "
+            "instructions describe."
         )
 
         task: str | MultiModalMessage = task_text
@@ -384,10 +387,33 @@ async def _debate(
                 completed_turns += 1
 
         reason = (result.stop_reason if result else "") or ""
+
+        # Either way, the Critic gets the last word: a detailed closing statement
+        # streamed via a fresh run (the Critic still holds the full debate in its
+        # model context from the round-robin). Shared local helper so both the
+        # consensus and no-consensus branches reuse the same streaming loop.
+        async def _run_closing(closing_task: str) -> None:
+            async for cmsg in critic.run_stream(task=closing_task, cancellation_token=token):
+                if isinstance(cmsg, TaskResult):
+                    break
+                await _forward(cmsg, queue)
+
         if REASON_CONSENSUS in reason:
+            # Consensus: the Critic states the agreed answer, then elaborates.
+            await queue.put({"type": "status", "stage": "debate",
+                             "text": "Consensus reached — the Critic is writing the conclusion…"})
+            consensus_task = (
+                f"Current date (UTC): {today}. The group has reached unanimous consensus. As the "
+                "Critic, give the FINAL conclusion in markdown: FIRST state the agreed answer to "
+                "the user's question clearly and directly, THEN elaborate in detail — the key "
+                "reasoning behind it, the supporting evidence and sources cited during the "
+                "discussion, important caveats and assumptions, and any remaining limitations. "
+                "Do not emit the consensus token."
+            )
+            await _run_closing(consensus_task)
             await queue.put({"type": "status", "stage": "consensus", "text": "Consensus reached ✓"})
         else:
-            # No agreement: the Critic delivers a bullet-point closing statement.
+            # No agreement: the Critic delivers a detailed closing statement.
             why = "the discussion kept repeating itself (deadlock)" if REASON_STUCK_LOOP in reason \
                 else "the round limit was reached"
             await queue.put({"type": "status", "stage": "debate",
@@ -395,13 +421,11 @@ async def _debate(
             closing_task = (
                 f"Current date (UTC): {today}. The discussion ended without the group reaching "
                 f"agreement ({why}). As the Critic, give the FINAL closing statement as markdown "
-                "bullet points: each bullet a specific point of disagreement and why it blocked "
-                "consensus. Be concise. Do not emit the consensus token."
+                "bullet points: one bullet per specific point of disagreement, each elaborated in "
+                "detail — what each side held, why it blocked consensus, and (where possible) what "
+                "evidence or decision would resolve it. Do not emit the consensus token."
             )
-            async for cmsg in critic.run_stream(task=closing_task, cancellation_token=token):
-                if isinstance(cmsg, TaskResult):
-                    break
-                await _forward(cmsg, queue)
+            await _run_closing(closing_task)
             await queue.put({"type": "status", "stage": "closed",
                              "text": "Debate closed by the Critic — no consensus."})
 

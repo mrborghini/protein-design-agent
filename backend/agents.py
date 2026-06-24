@@ -93,10 +93,13 @@ DEFAULT_AGENTS: list[dict] = [
         "with_research": True,
         "system_message": (
             "You gather and synthesize key facts and evidence relevant to the user's "
-            "question, from the provided document and from the literature. When recent or "
-            "external information would help, call the web_research tool with a focused query, "
-            "then give a concise, factual summary grounded in what you found. Always cite "
-            "source titles/URLs you used."
+            "question, from the provided document and from the literature. Treat your own "
+            "training knowledge as potentially out of date: whenever the answer could depend "
+            "on facts that change over time (current events, statuses, recognitions, prices, "
+            "latest figures, who currently holds a role, etc.), call the web_research tool "
+            "BEFORE answering — include the current date or recency terms (e.g. the current "
+            "year) in the query so the results are up to date. Then give a concise, factual "
+            "summary grounded in what you found. Always cite the source titles/URLs you used."
         ),
     },
     {
