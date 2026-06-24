@@ -412,6 +412,7 @@ export default function App() {
               {i + 1} · {a.name} <span className="text-slate-300 dark:text-[#c0c0c0]">— {a.model}</span>
               {a.with_research ? " 🔎" : ""}
               {caps[a.model]?.vision ? " 👁" : ""}
+              {caps[a.model]?.tools ? " 🔧" : ""}
             </p>
           ))}
           {pdfName && <p className="pt-2 text-emerald-600 dark:text-emerald-400">Grounded on {pdfName}</p>}

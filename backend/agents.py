@@ -74,10 +74,10 @@ CRITIC_CLARIFY_RULE = (
 # native Ollama client from making provider-specific assumptions. We keep a
 # vision and a non-vision variant: the `vision` flag tells AutoGen whether image
 # content may be sent to this client (only set it for models that support it).
-def _model_info(vision: bool = False) -> ModelInfo:
+def _model_info(vision: bool = False, function_calling: bool = True) -> ModelInfo:
     return ModelInfo(
         vision=vision,
-        function_calling=True,
+        function_calling=function_calling,
         json_output=True,
         family="unknown",
     )
@@ -134,6 +134,7 @@ def _client(
     vision: bool = False,
     agent_name: str = "",
     enable_thinking: bool = False,
+    tools_capable: bool = True,
 ) -> StreamingOllamaChatCompletionClient:
     # num_ctx is passed inside `options`, matching the Ollama /api/chat schema
     # (https://docs.ollama.com/). Constructing a client is cheap (no connection),
@@ -142,7 +143,7 @@ def _client(
     return StreamingOllamaChatCompletionClient(
         model=model,
         host=OLLAMA_HOST,
-        model_info=_model_info(vision),
+        model_info=_model_info(vision, function_calling=tools_capable),
         options={"num_ctx": num_ctx},
         agent_name=agent_name,
         enable_thinking=enable_thinking,
@@ -169,24 +170,35 @@ def build_agent(
     critiques: list[str] | None = None,
     is_critic: bool = False,
     clarification_tool=None,
+    tools_capable: bool = True,
 ) -> AssistantAgent:
-    """Generic agent factory used by both the CLI and the consensus debate."""
+    """Generic agent factory used by both the CLI and the consensus debate.
+
+    `tools_capable` reflects whether the model advertises the Ollama `tools`
+    capability. When False, no tools are attached (and the function-calling
+    flag in ModelInfo is False) so the agent can't be told to call — or
+    hallucinate — a tool the model can't actually invoke.
+    """
     sys = system_message + critique_directive(critiques)
-    if is_critic and clarification_tool is not None:
+    give_clarify = tools_capable and is_critic and clarification_tool is not None
+    if give_clarify:
         sys += CRITIC_CLARIFY_RULE
     sys += f"\n\n{CONSENSUS_RULE}" if consensus else ""
     safe = safe_name(name)
 
     tools = []
-    if with_research:
+    if tools_capable and with_research:
         tools.append(web_research_tool)
-    if is_critic and clarification_tool is not None:
+    if give_clarify:
         tools.append(clarification_tool)
 
     return AssistantAgent(
         name=safe,
-        model_client=_client(model, num_ctx, vision=vision, agent_name=safe, enable_thinking=enable_thinking),
-        tools=tools,
+        model_client=_client(
+            model, num_ctx, vision=vision, agent_name=safe,
+            enable_thinking=enable_thinking, tools_capable=tools_capable,
+        ),
+        tools=tools or None,  # empty list is `not None` ⇒ trips AutoGen's function_calling guard
         reflect_on_tool_use=bool(tools),  # reflect when any tool (research / clarify) is present
         model_client_stream=True,  # surface token-by-token deltas to the UI
         system_message=sys,
@@ -199,6 +211,7 @@ def build_roster(
     consensus: bool = True,
     vision_models: set[str] | None = None,
     thinking_models: set[str] | None = None,
+    tools_models: set[str] | None = None,
     clarification_tool=None,
 ) -> list[AssistantAgent]:
     """Build the list of agents for the debate from config (or the defaults).
@@ -211,6 +224,7 @@ def build_roster(
     configs = agents if agents else DEFAULT_AGENTS
     vision_models = vision_models or set()
     thinking_models = thinking_models or set()
+    tools_models = tools_models or set()
     all_names = [safe_name(c["name"]) for c in configs]
 
     def _critic_targets(c: dict) -> list[str] | None:
@@ -236,6 +250,7 @@ def build_roster(
             critiques=_critic_targets(c),
             is_critic=bool(c.get("is_critic")),
             clarification_tool=clarification_tool,
+            tools_capable=c["model"] in tools_models,
         )
         for c in configs
     ]

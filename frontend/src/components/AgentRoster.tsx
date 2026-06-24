@@ -5,7 +5,7 @@ import { formatCtx } from "../lib/download";
 const FIELD =
   "w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white";
 
-export type ModelCaps = Record<string, { vision: boolean | null }>;
+export type ModelCaps = Record<string, { vision: boolean | null; tools: boolean | null }>;
 
 function VisionBadge({ vision }: { vision: boolean | null | undefined }) {
   if (vision === true)
@@ -13,6 +13,14 @@ function VisionBadge({ vision }: { vision: boolean | null | undefined }) {
   if (vision === false)
     return <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-[#454545] dark:text-[#d0d0d0]">no vision</span>;
   return <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="Capability unknown — verified on send">vision?</span>;
+}
+
+function ToolsBadge({ tools }: { tools: boolean | null | undefined }) {
+  if (tools === true)
+    return <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">🔧 tools</span>;
+  if (tools === false)
+    return <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-[#454545] dark:text-[#d0d0d0]">no tools</span>;
+  return <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="Capability unknown — verified on send">tools?</span>;
 }
 
 export default function AgentRoster({
@@ -166,6 +174,7 @@ export default function AgentRoster({
 
               <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-[#d0d0d0]">
                 <VisionBadge vision={caps[a.model]?.vision} />
+                <ToolsBadge tools={caps[a.model]?.tools} />
                 {a.is_critic && (
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
                     critic

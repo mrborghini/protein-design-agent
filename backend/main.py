@@ -149,6 +149,12 @@ def _thinking_models_sync(names: list[str]) -> set[str]:
     return {n for n in names if _has_cap(n, "thinking") is True}
 
 
+def _tools_models_sync(names: list[str]) -> set[str]:
+    # Unknown capability (None, older Ollama without the field) ⇒ treated as
+    # unsupported, matching the vision/thinking convention above.
+    return {n for n in names if _has_cap(n, "tools") is True}
+
+
 @app.get("/api/models")
 async def models():
     """List models available on the local Ollama server (proxies /api/tags)."""
@@ -161,11 +167,15 @@ async def models():
 
 @app.get("/api/models/capabilities")
 async def model_capabilities():
-    """Report per-model vision + thinking capability (via Ollama /api/show)."""
+    """Report per-model vision + thinking + tools capability (via Ollama /api/show)."""
     def collect() -> dict:
         out = {}
         for n in _fetch_models_sync():
-            out[n] = {"vision": _has_cap(n, "vision"), "thinking": _has_cap(n, "thinking")}
+            out[n] = {
+                "vision": _has_cap(n, "vision"),
+                "thinking": _has_cap(n, "thinking"),
+                "tools": _has_cap(n, "tools"),
+            }
         return out
 
     try:
@@ -250,6 +260,7 @@ async def _debate(
     images: list[str] | None = None,
     vision_models: set[str] | None = None,
     thinking_models: set[str] | None = None,
+    tools_models: set[str] | None = None,
 ) -> None:
     """Round-robin consensus debate. Streams each agent turn onto `queue`."""
     try:
@@ -320,6 +331,7 @@ async def _debate(
         roster = build_roster(
             agents_cfg, num_ctx=num_ctx, consensus=True,
             vision_models=build_vision, thinking_models=thinking_models or set(),
+            tools_models=tools_models or set(),
             clarification_tool=clarification_tool,
         )
         registry.update({a.name: a for a in roster})
@@ -479,13 +491,33 @@ async def chat(req: ChatRequest):
         if req.images:
             vision_models = await asyncio.to_thread(_vision_models_sync, roster_models)
 
+        # Tool calling: an agent is handed a tool iff it does research, or it's the
+        # Critic (which always receives the ask_clarification tool in _debate). Hard-fail
+        # up front if such an agent's model doesn't advertise the Ollama `tools`
+        # capability — otherwise it would crash mid-debate or hallucinate tool calls.
+        tools_models = await asyncio.to_thread(_tools_models_sync, roster_models)
+        offenders = [
+            (c["name"], c["model"])
+            for c in (agents_cfg or DEFAULT_AGENTS)
+            if (c.get("with_research") or c.get("is_critic")) and c["model"] not in tools_models
+        ]
+        if offenders:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "These agents need tool calling but their model lacks the Ollama "
+                    "`tools` capability — pick a tools-capable model: "
+                    + ", ".join(f"{n} ({m})" for n, m in offenders)
+                ),
+            )
+
         # Set the sink BEFORE creating the task so the task (and the research tool +
         # streaming client running inside it) inherit this client's queue via contextvars.
         research_sink.set(queue)
         task = asyncio.create_task(
             _debate(
                 req.message, agents_cfg, queue, token, num_ctx, max_rounds,
-                req.images, vision_models, thinking_models,
+                req.images, vision_models, thinking_models, tools_models,
             )
         )
     except Exception:
