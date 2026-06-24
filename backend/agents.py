@@ -47,6 +47,12 @@ OLLAMA_HOST = _normalize_ollama_host(os.environ.get("OLLAMA_HOST"))
 # Overridable via env; the web UI can also set it per request.
 DEFAULT_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "32768"))
 
+# Per-agent sampling knobs surfaced as sliders in the web UI. Each is optional and
+# only injected into the Ollama `options` object when set (see `_client`); unset keys
+# fall back to Ollama's own defaults. These map 1:1 to Ollama /api/chat options
+# (https://docs.ollama.com/modelfile). `num_ctx` is handled separately.
+SAMPLING_KEYS = ("temperature", "top_p", "top_k", "min_p", "repeat_penalty", "num_predict")
+
 # Appended to each agent's system prompt during a consensus debate. The debate
 # runs in turn-based rounds (each agent speaks once per round, in order) and ends
 # only when EVERY agent agrees in the same round. Agents emit this exact token,
@@ -90,6 +96,7 @@ DEFAULT_AGENTS: list[dict] = [
     {
         "name": "LiteratureAgent",
         "model": "qwen3.5:latest",
+        "temperature": 0.5,
         "with_research": True,
         "system_message": (
             "You gather and synthesize key facts and evidence relevant to the user's "
@@ -105,12 +112,14 @@ DEFAULT_AGENTS: list[dict] = [
     {
         "name": "HypothesisAgent",
         "model": "gemma4:latest",
+        "temperature": 0.5,
         "with_research": False,
         "system_message": "You generate actionable, testable ideas and proposals that address the user's question.",
     },
     {
         "name": "Critic",
         "model": "gpt-oss:latest",
+        "temperature": 0.5,
         "with_research": False,
         "is_critic": True,
         "critiques": [],  # empty ⇒ critique ALL other agents (default)
@@ -138,16 +147,21 @@ def _client(
     agent_name: str = "",
     enable_thinking: bool = False,
     tools_capable: bool = True,
+    sampling: dict | None = None,
 ) -> StreamingOllamaChatCompletionClient:
-    # num_ctx is passed inside `options`, matching the Ollama /api/chat schema
-    # (https://docs.ollama.com/). Constructing a client is cheap (no connection),
-    # so we build per request to honour the caller's num_ctx. The streaming client
-    # surfaces token deltas and (for thinking models) a separate reasoning channel.
+    # num_ctx and the sampling knobs are passed inside `options`, matching the Ollama
+    # /api/chat schema (https://docs.ollama.com/modelfile). Constructing a client is
+    # cheap (no connection), so we build per request to honour the caller's options.
+    # The streaming client surfaces token deltas and (for thinking models) a separate
+    # reasoning channel. Only sampling keys that are actually set are forwarded, so
+    # unset knobs fall back to Ollama's own defaults.
+    options = {"num_ctx": num_ctx}
+    options.update({k: v for k, v in (sampling or {}).items() if v is not None})
     return StreamingOllamaChatCompletionClient(
         model=model,
         host=OLLAMA_HOST,
         model_info=_model_info(vision, function_calling=tools_capable),
-        options={"num_ctx": num_ctx},
+        options=options,
         agent_name=agent_name,
         enable_thinking=enable_thinking,
     )
@@ -174,6 +188,7 @@ def build_agent(
     is_critic: bool = False,
     clarification_tool=None,
     tools_capable: bool = True,
+    sampling: dict | None = None,
 ) -> AssistantAgent:
     """Generic agent factory used by both the CLI and the consensus debate.
 
@@ -200,6 +215,7 @@ def build_agent(
         model_client=_client(
             model, num_ctx, vision=vision, agent_name=safe,
             enable_thinking=enable_thinking, tools_capable=tools_capable,
+            sampling=sampling,
         ),
         tools=tools or None,  # empty list is `not None` ⇒ trips AutoGen's function_calling guard
         reflect_on_tool_use=bool(tools),  # reflect when any tool (research / clarify) is present
@@ -254,6 +270,7 @@ def build_roster(
             is_critic=bool(c.get("is_critic")),
             clarification_tool=clarification_tool,
             tools_capable=c["model"] in tools_models,
+            sampling={k: c.get(k) for k in SAMPLING_KEYS},
         )
         for c in configs
     ]

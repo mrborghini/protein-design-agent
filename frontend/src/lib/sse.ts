@@ -20,6 +20,13 @@ export type AgentConfig = {
   with_research: boolean;
   /** Per-agent context window in tokens. Falls back to the global default if unset. */
   num_ctx?: number;
+  /** Per-agent Ollama sampling knobs. Unset ⇒ Ollama's own default is used. */
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  min_p?: number;
+  repeat_penalty?: number;
+  num_predict?: number;
   /** Marks the protected default Critic (non-removable). */
   is_critic?: boolean;
   /** Names of agents this critic should focus its critique on. */

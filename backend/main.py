@@ -66,6 +66,13 @@ class AgentConfig(BaseModel):
     critiques: list[str] | None = None
     # Manual vision override: None ⇒ auto-detect via /api/show; True/False ⇒ force.
     vision: bool | None = None
+    # Optional per-agent Ollama sampling knobs (None ⇒ use Ollama's own default).
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    repeat_penalty: float | None = None
+    num_predict: int | None = None
 
 
 class ChatRequest(BaseModel):
@@ -88,6 +95,27 @@ def clamp_max_turns(n: int | None) -> int:
     if not n:
         return DEFAULT_MAX_TURNS
     return max(MAX_TURNS_MIN, min(MAX_TURNS_MAX, n))
+
+
+# Bounds for the per-agent sampling sliders. Defensive clamping only — values come
+# from the client. Keys mirror SAMPLING_KEYS in backend/agents.py (num_ctx handled
+# separately). num_predict's -1 means "unlimited", so it has no lower clamp here.
+SAMPLING_BOUNDS = {
+    "temperature": (0.0, 2.0),
+    "top_p": (0.0, 1.0),
+    "top_k": (0, 100),
+    "min_p": (0.0, 1.0),
+    "repeat_penalty": (0.5, 2.0),
+    "num_predict": (-1, 8192),
+}
+
+
+def clamp_sampling(cfg: dict) -> None:
+    """Clamp any present sampling knobs in-place to their slider bounds."""
+    for key, (lo, hi) in SAMPLING_BOUNDS.items():
+        v = cfg.get(key)
+        if v is not None:
+            cfg[key] = max(lo, min(hi, v))
 
 
 @app.get("/api/health")
@@ -527,9 +555,11 @@ async def chat(req: ChatRequest):
         num_ctx = clamp_num_ctx(req.num_ctx)
         max_rounds = None if req.unlimited else clamp_max_turns(req.max_turns)
         agents_cfg = [a.model_dump() for a in req.agents] if req.agents else None
-        # Clamp each agent's own context window (falling back to the request default).
+        # Clamp each agent's own context window (falling back to the request default)
+        # and its sampling knobs.
         for a in agents_cfg or []:
             a["num_ctx"] = clamp_num_ctx(a.get("num_ctx") or num_ctx)
+            clamp_sampling(a)
 
         # Record the user's message into the shared conversation immediately.
         session.append_item({
