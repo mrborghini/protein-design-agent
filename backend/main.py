@@ -99,23 +99,29 @@ def clamp_max_turns(n: int | None) -> int:
 
 # Bounds for the per-agent sampling sliders. Defensive clamping only — values come
 # from the client. Keys mirror SAMPLING_KEYS in backend/agents.py (num_ctx handled
-# separately). num_predict's -1 means "unlimited", so it has no lower clamp here.
+# separately). num_predict's -1 means "unlimited" (generate until the context fills);
+# its upper bound is the agent's context window (see clamp_sampling), so the value here
+# is only a fallback used if num_ctx is somehow absent.
 SAMPLING_BOUNDS = {
     "temperature": (0.0, 2.0),
     "top_p": (0.0, 1.0),
     "top_k": (0, 100),
     "min_p": (0.0, 1.0),
     "repeat_penalty": (0.5, 2.0),
-    "num_predict": (-1, 8192),
+    "num_predict": (-1, NUM_CTX_MAX),
 }
 
 
 def clamp_sampling(cfg: dict) -> None:
-    """Clamp any present sampling knobs in-place to their slider bounds."""
+    """Clamp present sampling knobs in-place to their slider bounds. num_predict is
+    capped to the agent's resolved context window (num_ctx must already be on cfg)."""
     for key, (lo, hi) in SAMPLING_BOUNDS.items():
         v = cfg.get(key)
-        if v is not None:
-            cfg[key] = max(lo, min(hi, v))
+        if v is None:
+            continue
+        if key == "num_predict":
+            hi = cfg.get("num_ctx", hi)  # -1 stays unlimited; else can't exceed the context window
+        cfg[key] = max(lo, min(hi, v))
 
 
 @app.get("/api/health")

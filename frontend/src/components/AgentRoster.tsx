@@ -11,13 +11,61 @@ export type ModelCaps = Record<string, { vision: boolean | null; tools: boolean 
 // the agent hasn't set one (Ollama's own default, except temperature which we seed at
 // 0.5 for new agents). Mirrors SAMPLING_KEYS in backend/agents.py.
 type SamplingKey = "temperature" | "top_p" | "top_k" | "min_p" | "repeat_penalty" | "num_predict";
-const SAMPLING: { key: SamplingKey; label: string; min: number; max: number; step: number; def: number }[] = [
-  { key: "temperature", label: "Temperature", min: 0, max: 2, step: 0.05, def: 0.5 },
-  { key: "top_p", label: "Top P", min: 0, max: 1, step: 0.05, def: 0.9 },
-  { key: "top_k", label: "Top K", min: 0, max: 100, step: 1, def: 40 },
-  { key: "min_p", label: "Min P", min: 0, max: 1, step: 0.01, def: 0.0 },
-  { key: "repeat_penalty", label: "Repeat penalty", min: 0.5, max: 2, step: 0.05, def: 1.1 },
-  { key: "num_predict", label: "Max tokens", min: -1, max: 8192, step: 256, def: -1 },
+const SAMPLING: { key: SamplingKey; label: string; min: number; max: number; step: number; def: number; desc: string }[] = [
+  {
+    key: "temperature",
+    label: "Temperature",
+    min: 0,
+    max: 2,
+    step: 0.05,
+    def: 0.5,
+    desc: "Randomness of the output. Lower is more focused and deterministic; higher is more creative and varied.",
+  },
+  {
+    key: "top_p",
+    label: "Top P",
+    min: 0,
+    max: 1,
+    step: 0.05,
+    def: 0.9,
+    desc: "Nucleus sampling: only consider tokens within the top P cumulative probability. Lower narrows the choices.",
+  },
+  {
+    key: "top_k",
+    label: "Top K",
+    min: 0,
+    max: 100,
+    step: 1,
+    def: 40,
+    desc: "Only sample from the K most likely next tokens. Lower is more focused; 0 disables the limit.",
+  },
+  {
+    key: "min_p",
+    label: "Min P",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    def: 0.0,
+    desc: "Drop tokens less likely than this fraction of the top token's probability. An alternative to Top P; 0 disables it.",
+  },
+  {
+    key: "repeat_penalty",
+    label: "Repeat penalty",
+    min: 0.5,
+    max: 2,
+    step: 0.05,
+    def: 1.1,
+    desc: "Penalizes reusing recent tokens. Above 1 discourages repetition; below 1 encourages it.",
+  },
+  {
+    key: "num_predict",
+    label: "Max tokens",
+    min: -1,
+    max: 8192, // fallback only; the slider max is the agent's context window (see render)
+    step: 256,
+    def: -1,
+    desc: "Maximum tokens to generate in a reply, capped by the context window. -1 means unlimited (generate until the context fills).",
+  },
 ];
 
 // Cycle a vision override: auto (undefined) → on → off → auto.
@@ -322,10 +370,20 @@ export default function AgentRoster({
                   <span className="text-slate-400">{openSampling[a.id ?? String(i)] ? "▾" : "▸"}</span>
                 </button>
                 {openSampling[a.id ?? String(i)] && (
-                  <div className="mt-1.5 space-y-2 rounded-lg bg-slate-50 p-2 dark:bg-[#363636]">
+                  <div className="mt-1.5 space-y-3 rounded-lg bg-slate-50 p-2 dark:bg-[#363636]">
                     {SAMPLING.map((s) => {
                       const val = (a[s.key] as number | undefined) ?? s.def;
-                      const shown = s.key === "num_predict" && val === -1 ? "Unlimited" : val;
+                      // Max tokens is bounded by the agent's context window, not a fixed cap.
+                      const effCtx = a.num_ctx ?? defaultNumCtx;
+                      const isMaxTokens = s.key === "num_predict";
+                      const sliderMax = isMaxTokens ? effCtx : s.max;
+                      let shown: string | number = val;
+                      if (isMaxTokens) {
+                        shown =
+                          val < 0
+                            ? "Unlimited"
+                            : `${val} · ${Math.min(100, Math.round((val / effCtx) * 100))}%`;
+                      }
                       return (
                         <div key={s.key}>
                           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-[#d0d0d0]">
@@ -335,7 +393,7 @@ export default function AgentRoster({
                           <input
                             type="range"
                             min={s.min}
-                            max={s.max}
+                            max={sliderMax}
                             step={s.step}
                             value={val}
                             onChange={(e) =>
@@ -343,6 +401,9 @@ export default function AgentRoster({
                             }
                             className="mt-1 w-full accent-sky-600"
                           />
+                          <p className="mt-0.5 text-[10px] leading-snug text-slate-400 dark:text-[#9a9a9a]">
+                            {s.desc}
+                          </p>
                         </div>
                       );
                     })}
