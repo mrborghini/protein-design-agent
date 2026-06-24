@@ -374,33 +374,56 @@ export default function AgentRoster({
                     {SAMPLING.map((s) => {
                       const val = (a[s.key] as number | undefined) ?? s.def;
                       // Max tokens is bounded by the agent's context window, not a fixed cap.
+                      // "Unlimited" (num_predict < 0) is a checkbox; the slider only covers
+                      // finite caps (256 .. context window).
                       const effCtx = a.num_ctx ?? defaultNumCtx;
                       const isMaxTokens = s.key === "num_predict";
-                      const sliderMax = isMaxTokens ? effCtx : s.max;
-                      let shown: string | number = val;
-                      if (isMaxTokens) {
-                        shown =
-                          val < 0
-                            ? "Unlimited"
-                            : `${val} · ${Math.min(100, Math.round((val / effCtx) * 100))}%`;
-                      }
+                      const unlimited = isMaxTokens && val < 0;
+                      const shown = isMaxTokens
+                        ? `${val} · ${Math.min(100, Math.round((val / effCtx) * 100))}%`
+                        : val;
                       return (
                         <div key={s.key}>
                           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-[#d0d0d0]">
                             <span>{s.label}</span>
-                            <span className="font-semibold text-slate-700 dark:text-[#ededed]">{shown}</span>
+                            {isMaxTokens ? (
+                              <label className="flex cursor-pointer items-center gap-1 select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={unlimited}
+                                  onChange={(e) =>
+                                    update(i, {
+                                      num_predict: e.target.checked ? -1 : Math.min(4096, effCtx),
+                                    })
+                                  }
+                                  className="accent-sky-600"
+                                />
+                                <span>Unlimited</span>
+                              </label>
+                            ) : (
+                              <span className="font-semibold text-slate-700 dark:text-[#ededed]">{shown}</span>
+                            )}
                           </div>
-                          <input
-                            type="range"
-                            min={s.min}
-                            max={sliderMax}
-                            step={s.step}
-                            value={val}
-                            onChange={(e) =>
-                              update(i, { [s.key]: Number(e.target.value) } as Partial<AgentConfig>)
-                            }
-                            className="mt-1 w-full accent-sky-600"
-                          />
+                          {!unlimited && (
+                            <>
+                              {isMaxTokens && (
+                                <div className="text-right text-[11px] font-semibold text-slate-700 dark:text-[#ededed]">
+                                  {shown}
+                                </div>
+                              )}
+                              <input
+                                type="range"
+                                min={isMaxTokens ? 256 : s.min}
+                                max={isMaxTokens ? effCtx : s.max}
+                                step={s.step}
+                                value={val}
+                                onChange={(e) =>
+                                  update(i, { [s.key]: Number(e.target.value) } as Partial<AgentConfig>)
+                                }
+                                className="mt-1 w-full accent-sky-600"
+                              />
+                            </>
+                          )}
                           <p className="mt-0.5 text-[10px] leading-snug text-slate-400 dark:text-[#9a9a9a]">
                             {s.desc}
                           </p>
