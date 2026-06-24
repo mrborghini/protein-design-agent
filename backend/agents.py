@@ -7,6 +7,7 @@ roster (different models, extra verifiers) for the consensus debate.
 """
 import os
 import re
+from urllib.parse import urlparse
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_core.models import ModelInfo
@@ -15,8 +16,31 @@ from autogen_core.tools import FunctionTool
 from backend.research import web_research_tool
 from backend.streaming_client import StreamingOllamaChatCompletionClient
 
-# Ollama host can be overridden via env var (e.g. when behind Tailscale).
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+def _normalize_ollama_host(raw: str | None) -> str:
+    """Coerce an OLLAMA_HOST value into a valid client base URL.
+
+    The same env var is often set to a *bind* address for the Ollama server
+    (e.g. `0.0.0.0`, no scheme/port). Used verbatim as a connect URL that breaks
+    raw urllib calls (`unknown url type`). Normalize: add scheme/port, and map the
+    unroutable bind-any address to loopback.
+    """
+    raw = (raw or "").strip().rstrip("/")
+    if not raw:
+        return "http://localhost:11434"
+    if "://" not in raw:
+        raw = "http://" + raw
+    parsed = urlparse(raw)
+    host = parsed.hostname or "localhost"
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    port = parsed.port or 11434
+    return f"{parsed.scheme}://{host}:{port}"
+
+
+# Ollama host can be overridden via env var (e.g. when behind Tailscale). Normalized
+# so a bare bind address like `0.0.0.0` still yields a usable client URL.
+OLLAMA_HOST = _normalize_ollama_host(os.environ.get("OLLAMA_HOST"))
 
 # Default context-window size (num_ctx). Bounding this caps the Ollama KV-cache
 # memory and keeps long PDF + tool-call histories from being silently truncated.
@@ -68,10 +92,10 @@ DEFAULT_AGENTS: list[dict] = [
         "model": "qwen3.5:latest",
         "with_research": True,
         "system_message": (
-            "You extract key facts about protein design from the provided document "
-            "and from the literature. When the question would benefit from recent or "
-            "external information, call the web_research tool with a focused query, then "
-            "synthesize a concise, factual summary grounded in what you found. Always cite "
+            "You gather and synthesize key facts and evidence relevant to the user's "
+            "question, from the provided document and from the literature. When recent or "
+            "external information would help, call the web_research tool with a focused query, "
+            "then give a concise, factual summary grounded in what you found. Always cite "
             "source titles/URLs you used."
         ),
     },
@@ -79,7 +103,7 @@ DEFAULT_AGENTS: list[dict] = [
         "name": "HypothesisAgent",
         "model": "gemma4:latest",
         "with_research": False,
-        "system_message": "You generate actionable, testable hypotheses for protein design.",
+        "system_message": "You generate actionable, testable ideas and proposals that address the user's question.",
     },
     {
         "name": "Critic",
@@ -87,7 +111,7 @@ DEFAULT_AGENTS: list[dict] = [
         "with_research": False,
         "is_critic": True,
         "critiques": [],  # empty ⇒ critique ALL other agents (default)
-        "system_message": "You critique hypotheses based strictly on the established facts.",
+        "system_message": "You critique the proposals based strictly on the established facts.",
     },
 ]
 

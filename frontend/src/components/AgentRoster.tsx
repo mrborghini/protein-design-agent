@@ -18,6 +18,7 @@ function VisionBadge({ vision }: { vision: boolean | null | undefined }) {
 export default function AgentRoster({
   agents,
   models,
+  modelsError,
   caps,
   defaultNumCtx,
   ctxMin,
@@ -30,6 +31,7 @@ export default function AgentRoster({
 }: {
   agents: AgentConfig[];
   models: string[];
+  modelsError?: string;
   caps: ModelCaps;
   defaultNumCtx: number;
   ctxMin: number;
@@ -130,6 +132,13 @@ export default function AgentRoster({
           />
           {importError && <span className="text-xs text-red-600 dark:text-red-400">{importError}</span>}
         </div>
+
+        {modelsError && (
+          <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">
+            {modelsError} — the model dropdowns may be empty. Check that Ollama is running and that
+            <code className="mx-1">OLLAMA_HOST</code> points at it.
+          </div>
+        )}
 
         <div className="space-y-3">
           {agents.map((a, i) => (

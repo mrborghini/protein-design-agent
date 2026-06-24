@@ -102,7 +102,7 @@ export default function Chat({
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 space-y-3 overflow-y-auto px-6 py-6">
         {items.length === 0 && (
           <div className="mt-20 text-center text-sm text-slate-400 dark:text-[#c8c8c8]">
-            Ask a protein-design question. The agents will discuss it (browsing the web if needed)
+            Ask the agents anything. They'll discuss it (browsing the web if needed)
             and debate until they reach a consensus.
           </div>
         )}
@@ -195,7 +195,7 @@ export default function Chat({
               }
             }}
             rows={1}
-            placeholder="Ask about protein design…"
+            placeholder="Ask the agents anything…"
             className="max-h-40 flex-1 resize-none rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white dark:placeholder:text-slate-500"
           />
           {streaming ? (

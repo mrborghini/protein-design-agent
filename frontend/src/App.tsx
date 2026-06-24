@@ -30,7 +30,7 @@ function normalizeAgent(a: Partial<AgentConfig>, defaultNumCtx: number): AgentCo
 }
 
 function conversationToMarkdown(items: ChatItem[]): string {
-  const lines: string[] = ["# Protein Design Agent — conversation\n"];
+  const lines: string[] = ["# Multi-Agent Debate — conversation\n"];
   for (const it of items) {
     if (it.kind === "user") lines.push(`## You\n\n${it.text}\n`);
     else if (it.kind === "agent") {
@@ -69,6 +69,7 @@ export default function App() {
   const [streaming, setStreaming] = useState(false); // same flag, for rendering (Stop button)
 
   const [models, setModels] = useState<string[]>([]);
+  const [modelsError, setModelsError] = useState("");
   const [caps, setCaps] = useState<ModelCaps>({});
   const [defaults, setDefaults] = useState<AgentConfig[]>([]);
   const [roster, setRoster] = useState<AgentConfig[]>(() => {
@@ -103,8 +104,13 @@ export default function App() {
       .catch(() => {});
     fetch("/api/models")
       .then((r) => r.json())
-      .then((d) => setModels(d.models ?? []))
-      .catch(() => {});
+      .then((d) => {
+        setModels(d.models ?? []);
+        setModelsError(d.error ? `Couldn't load models from Ollama: ${d.error}` : "");
+      })
+      .catch((e) =>
+        setModelsError(`Couldn't reach the backend to list models: ${e instanceof Error ? e.message : e}`)
+      );
     fetch("/api/models/capabilities")
       .then((r) => r.json())
       .then((d) => setCaps(d.capabilities ?? {}))
@@ -204,7 +210,7 @@ export default function App() {
   }
 
   function exportConfig() {
-    downloadJSON("protein-agent-config.json", { version: 1, defaultNumCtx: numCtx, maxTurns, roster });
+    downloadJSON("debate-agent-config.json", { version: 1, defaultNumCtx: numCtx, maxTurns, roster });
   }
 
   function importConfig(raw: string): string | null {
@@ -307,7 +313,7 @@ export default function App() {
       <aside className="flex w-72 flex-col gap-4 overflow-y-auto border-r border-slate-200 bg-white px-4 py-6 dark:border-[#4a4a4a] dark:bg-[#3c3c3c]">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-lg font-semibold text-slate-800 dark:text-white">Protein Design Agent</h1>
+            <h1 className="text-lg font-semibold text-slate-800 dark:text-white">Multi-Agent Debate</h1>
             <p className="mt-1 text-xs text-slate-400 dark:text-[#c8c8c8]">Local · Ollama · Playwright</p>
           </div>
           <button
@@ -427,6 +433,7 @@ export default function App() {
         <AgentRoster
           agents={roster}
           models={models}
+          modelsError={modelsError}
           caps={caps}
           defaultNumCtx={numCtx}
           ctxMin={ctxBounds.min}

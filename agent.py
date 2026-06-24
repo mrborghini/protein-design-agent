@@ -13,7 +13,7 @@ parser.add_argument('--host', default='http://localhost:11434', help='Ollama hos
 args, unknown_args = parser.parse_known_args()
 user_prompt = " ".join(unknown_args)
 if not user_prompt:
-    user_prompt = "Summarize recent findings on RFdiffusion for binder design."
+    user_prompt = "Summarize recent findings on a topic of your choice and propose next steps."
 
 ollama_host = args.host
 
@@ -81,24 +81,24 @@ async def main():
         name="LiteratureAgent",
         model_client=qwen_client,
         tools=[web_scrape, read_file, save_file],
-        system_message="You extract key facts about protein design. You can search the web and read files."
+        system_message="You extract key facts relevant to the user's question. You can search the web and read files."
     )
     
     hypothesis_agent = AssistantAgent(
         name="HypothesisAgent",
         model_client=gemma_client,
         tools=[read_file, save_file],
-        system_message="You generate actionable hypotheses for protein design. You can read and save files."
+        system_message="You generate actionable ideas and proposals that address the user's question. You can read and save files."
     )
     
     critic = AssistantAgent(
         name="Critic",
         model_client=gpt_oss_client,
         tools=[save_file],
-        system_message="You critique hypotheses based on facts. Save your final conclusions to a file."
+        system_message="You critique the proposals based on facts. Save your final conclusions to a file."
     )
 
-    print(">>> Starting Protein Design Cycle with Native AutoGen v0.4 Ollama Client <<<")
+    print(">>> Starting Multi-Agent Debate Cycle with Native AutoGen v0.4 Ollama Client <<<")
     
     token = CancellationToken()
     try:

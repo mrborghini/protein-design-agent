@@ -230,7 +230,7 @@ async def _fetch_page_text(context, url: str) -> str:
 async def web_research(query: str, max_results: int = 3) -> str:
     """Search the web for `query`, read the top results, and return a text summary.
 
-    Use this to gather recent or external information about protein design topics.
+    Use this to gather recent or external information relevant to the user's question.
     """
     # Imported lazily so the module imports even before `playwright install`.
     from playwright.async_api import async_playwright
@@ -298,5 +298,5 @@ async def web_research(query: str, max_results: int = 3) -> str:
 # AutoGen tool the LiteratureAgent can call.
 web_research_tool = FunctionTool(
     web_research,
-    description="Search the web and read top results for a focused query about protein design.",
+    description="Search the web and read top results for a focused query.",
 )

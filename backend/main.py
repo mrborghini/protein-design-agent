@@ -43,7 +43,7 @@ DEFAULT_MAX_TURNS = 20
 MAX_TURNS_MIN = 1
 MAX_TURNS_MAX = 100
 
-app = FastAPI(title="Protein Design Agent")
+app = FastAPI(title="Multi-Agent Debate")
 
 # Dev convenience: the Vite dev server runs on a different port.
 app.add_middleware(
