@@ -310,14 +310,16 @@ export default function AgentRoster({
                 />
               </div>
 
-              {/* Collapsible per-agent sampling sliders */}
+              {/* Collapsible per-agent advanced LLM settings (sampling sliders) */}
               <div className="mt-2">
                 <button
                   type="button"
                   onClick={() => toggleSampling(a.id ?? String(i))}
-                  className="text-[11px] font-medium text-slate-500 hover:text-slate-700 dark:text-[#d0d0d0] dark:hover:text-white"
+                  aria-expanded={!!openSampling[a.id ?? String(i)]}
+                  className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100 dark:border-[#4a4a4a] dark:bg-[#363636] dark:text-[#d0d0d0] dark:hover:bg-[#404040]"
                 >
-                  Sampling {openSampling[a.id ?? String(i)] ? "▾" : "▸"}
+                  <span>⚙ Advanced LLM settings</span>
+                  <span className="text-slate-400">{openSampling[a.id ?? String(i)] ? "▾" : "▸"}</span>
                 </button>
                 {openSampling[a.id ?? String(i)] && (
                   <div className="mt-1.5 space-y-2 rounded-lg bg-slate-50 p-2 dark:bg-[#363636]">

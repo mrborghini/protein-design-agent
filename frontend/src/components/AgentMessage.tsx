@@ -1,5 +1,4 @@
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import Markdown from "./Markdown";
 
 const AGENT_STYLES: Record<string, { badge: string; ring: string }> = {
   LiteratureAgent: { badge: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300", ring: "border-sky-200 dark:border-sky-900" },
@@ -49,16 +48,14 @@ export default function AgentMessage({
           <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-slate-500 dark:text-[#d0d0d0]">
             💭 Thinking
           </summary>
-          <div className="whitespace-pre-wrap px-3 pb-2 text-xs leading-relaxed text-slate-500 dark:text-[#d0d0d0]">
-            {thinking}
+          <div className="px-3 pb-2 leading-relaxed text-slate-500 dark:text-[#d0d0d0]">
+            <Markdown className="md md-sm">{thinking!}</Markdown>
           </div>
         </details>
       )}
 
       {content.trim().length > 0 && (
-        <div className="md mt-2 text-slate-800 dark:text-white">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-        </div>
+        <Markdown className="md mt-2 text-slate-800 dark:text-white">{content}</Markdown>
       )}
     </div>
   );

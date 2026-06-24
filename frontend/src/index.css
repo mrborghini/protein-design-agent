@@ -127,3 +127,25 @@ body {
 .dark .md hr {
   border-color: #4a4a4a;
 }
+
+/* Compact variant for the thinking panel: keep the muted text-xs scale even when
+   the reasoning contains markdown headings. */
+.md-sm {
+  font-size: 0.75rem;
+}
+.md-sm h1 {
+  font-size: 0.95rem;
+}
+.md-sm h2 {
+  font-size: 0.875rem;
+}
+.md-sm h3,
+.md-sm h4 {
+  font-size: 0.8rem;
+}
+
+/* Let wide display equations scroll instead of overflowing the message card. */
+.md .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
