@@ -521,6 +521,8 @@ def _record_event(event: dict, thinking: dict[str, str]) -> None:
             session.append_item({"kind": "closed"})
     elif t == "usage":
         session.add_usage(event["agent"], event.get("prompt_tokens", 0), event.get("completion_tokens", 0))
+    elif t == "usage_thinking":
+        session.add_thinking_usage(event["agent"], event.get("thinking_tokens", 0))
     elif t == "error":
         session.append_item({"kind": "error", "text": event.get("text", "")})
 

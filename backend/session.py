@@ -17,7 +17,7 @@ class Session:
         self.conversation: list[dict] = []
         self.busy: bool = False  # a debate is currently running
         self.status: str = ""  # latest status text, shown to observers
-        self.usage: dict[str, dict] = {}  # per-agent {prompt, completion} token totals
+        self.usage: dict[str, dict] = {}  # per-agent {prompt, completion, thinking} token totals
 
     def set_pdf(self, name: str, text: str, pages: int) -> None:
         self.pdf_name = name
@@ -38,11 +38,25 @@ class Session:
     def set_status(self, text: str) -> None:
         self.status = text
 
+    def _usage_entry(self, agent: str) -> dict:
+        # `completion` is Ollama's eval_count (thinking INCLUDED); `thinking` is the estimated
+        # share of it, so answer-only = completion - thinking. See streaming_client.create_stream.
+        return self.usage.get(agent, {"prompt": 0, "completion": 0, "thinking": 0})
+
     def add_usage(self, agent: str, prompt: int, completion: int) -> None:
-        cur = self.usage.get(agent, {"prompt": 0, "completion": 0})
+        cur = self._usage_entry(agent)
         self.usage[agent] = {
             "prompt": cur["prompt"] + prompt,
             "completion": cur["completion"] + completion,
+            "thinking": cur.get("thinking", 0),
+        }
+
+    def add_thinking_usage(self, agent: str, thinking: int) -> None:
+        cur = self._usage_entry(agent)
+        self.usage[agent] = {
+            "prompt": cur["prompt"],
+            "completion": cur["completion"],
+            "thinking": cur.get("thinking", 0) + thinking,
         }
 
     def clear_conversation(self) -> None:

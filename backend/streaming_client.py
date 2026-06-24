@@ -50,6 +50,21 @@ class StreamingOllamaChatCompletionClient(OllamaChatCompletionClient):
         if queue is not None:
             queue.put_nowait({"type": "thinking_delta", "agent": self._agent_name, "content": delta})
 
+    def _emit_thinking_usage(self, thinking_tokens: int) -> None:
+        """Push the per-turn thinking-token estimate onto the active SSE queue, if one is set.
+
+        Ollama reports only `eval_count` (total generated tokens, thinking INCLUDED) — there is
+        no separate thinking count — so this is an estimate of the thinking share (see
+        ``create_stream``). Skipped when zero (e.g. non-thinking turns) to avoid noise.
+        """
+        if thinking_tokens <= 0:
+            return
+        queue = research_sink.get(None)
+        if queue is not None:
+            queue.put_nowait(
+                {"type": "usage_thinking", "agent": self._agent_name, "thinking_tokens": thinking_tokens}
+            )
+
     async def create_stream(
         self,
         messages: Sequence[LLMMessage],
@@ -91,6 +106,7 @@ class StreamingOllamaChatCompletionClient(OllamaChatCompletionClient):
         content_chunks: List[str] = []
         full_tool_calls: List[FunctionCall] = []
         completion_tokens = 0
+        thinking_chars = 0  # length of streamed reasoning text, for the thinking-token estimate
         while True:
             try:
                 chunk_future = asyncio.ensure_future(anext(stream))
@@ -103,6 +119,7 @@ class StreamingOllamaChatCompletionClient(OllamaChatCompletionClient):
                 # Reasoning → out-of-band SSE queue (separate "thinking" channel).
                 thinking = getattr(chunk.message, "thinking", None)
                 if thinking:
+                    thinking_chars += len(thinking)
                     self._emit_thinking(thinking)
 
                 # Answer content → yielded so AutoGen streams it as a chunk event.
@@ -137,6 +154,17 @@ class StreamingOllamaChatCompletionClient(OllamaChatCompletionClient):
         else:
             completion_tokens = 0
             content = full_tool_calls
+
+        # Ollama's `eval_count` (completion_tokens) bundles thinking + answer with no split, so
+        # estimate the thinking share by character proportion of the streamed reasoning vs answer
+        # text. Exact (0) for non-thinking turns; approximate otherwise. Clamped to the total.
+        answer_chars = len("".join(content_chunks))
+        if completion_tokens > 0 and thinking_chars > 0:
+            thinking_tokens = round(completion_tokens * thinking_chars / (thinking_chars + answer_chars))
+            thinking_tokens = max(0, min(thinking_tokens, completion_tokens))
+        else:
+            thinking_tokens = 0
+        self._emit_thinking_usage(thinking_tokens)
 
         usage = RequestUsage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
         result = CreateResult(

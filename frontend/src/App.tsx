@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import Chat, { ChatItem } from "./components/Chat";
 import PdfUpload from "./components/PdfUpload";
 import ContextControl from "./components/ContextControl";
@@ -14,7 +14,9 @@ const CTX_KEY = "pda-numctx";
 const NOLIMIT_KEY = "pda-nolimit";
 const POLL_MS = 2000;
 
-type Usage = Record<string, { prompt: number; completion: number }>;
+// `completion` is Ollama's eval_count (output incl. thinking); `thinking` is the estimated
+// share of it, so answer-only output = completion - thinking. See backend/streaming_client.py.
+type Usage = Record<string, { prompt: number; completion: number; thinking: number }>;
 
 /** Fill in any missing AgentConfig fields with sensible defaults. */
 function newId(): string {
@@ -155,7 +157,7 @@ export default function App() {
           Object.fromEntries(
             Object.entries(snap.usage ?? {}).map(([k, v]: [string, any]) => [
               k,
-              { prompt: v.prompt ?? 0, completion: v.completion ?? 0 },
+              { prompt: v.prompt ?? 0, completion: v.completion ?? 0, thinking: v.thinking ?? 0 },
             ])
           )
         );
@@ -210,8 +212,18 @@ export default function App() {
 
   function addUsage(agent: string, prompt: number, completion: number) {
     setUsage((prev) => {
-      const cur = prev[agent] ?? { prompt: 0, completion: 0 };
-      return { ...prev, [agent]: { prompt: cur.prompt + prompt, completion: cur.completion + completion } };
+      const cur = prev[agent] ?? { prompt: 0, completion: 0, thinking: 0 };
+      return {
+        ...prev,
+        [agent]: { prompt: cur.prompt + prompt, completion: cur.completion + completion, thinking: cur.thinking },
+      };
+    });
+  }
+
+  function addThinkingUsage(agent: string, thinking: number) {
+    setUsage((prev) => {
+      const cur = prev[agent] ?? { prompt: 0, completion: 0, thinking: 0 };
+      return { ...prev, [agent]: { ...cur, thinking: cur.thinking + thinking } };
     });
   }
 
@@ -305,6 +317,7 @@ export default function App() {
               push({ kind: "agent", agent: e.agent, content: e.content, round: e.round });
             }
           } else if (e.type === "usage") addUsage(e.agent, e.prompt_tokens, e.completion_tokens);
+          else if (e.type === "usage_thinking") addThinkingUsage(e.agent, e.thinking_tokens);
           else if (e.type === "error") push({ kind: "error", text: e.text });
         },
         controller.signal
@@ -325,8 +338,11 @@ export default function App() {
     }
   }
 
-  const totalGenerated = Object.values(usage).reduce((s, u) => s + u.completion, 0);
-  const totalAll = Object.values(usage).reduce((s, u) => s + u.prompt + u.completion, 0);
+  const usageVals = Object.values(usage);
+  const totalInput = usageVals.reduce((s, u) => s + u.prompt, 0);
+  const totalThinking = usageVals.reduce((s, u) => s + u.thinking, 0);
+  const totalOutputIncl = usageVals.reduce((s, u) => s + u.completion, 0); // eval_count (incl. thinking)
+  const totalOutput = totalOutputIncl - totalThinking; // answer-only (approx)
 
   return (
     <div className="flex h-full text-slate-900 dark:text-white">
@@ -402,26 +418,36 @@ export default function App() {
           </button>
         </div>
 
-        {/* Token usage */}
+        {/* Token usage. Columns: input (prompt), output (answer-only), output incl. thinking.
+            Ollama reports only input + total-output (thinking bundled in), so the answer/thinking
+            split is an estimate — flagged "approx" below. */}
         {Object.keys(usage).length > 0 && (
           <div className="text-xs">
-            <p className="font-medium text-slate-500 dark:text-[#d0d0d0]">Tokens generated</p>
-            <div className="mt-1 space-y-0.5 text-slate-500 dark:text-[#d0d0d0]">
+            <p className="font-medium text-slate-500 dark:text-[#d0d0d0]">Tokens</p>
+            <div className="mt-1 grid grid-cols-[1fr_auto_auto_auto] gap-x-2 gap-y-0.5 text-right text-slate-500 dark:text-[#d0d0d0]">
+              <span className="text-left">&nbsp;</span>
+              <span title="Input tokens (prompt)">In</span>
+              <span title="Output tokens — answer only (approx)">Out</span>
+              <span title="Output tokens incl. thinking">+think</span>
               {Object.entries(usage).map(([agent, u]) => (
-                <p key={agent} className="flex justify-between">
-                  <span className="truncate">{agent}</span>
-                  <span className="font-medium text-slate-700 dark:text-[#ededed]">{formatTokens(u.completion)}</span>
-                </p>
+                <Fragment key={agent}>
+                  <span className="truncate text-left">{agent}</span>
+                  <span>{formatTokens(u.prompt)}</span>
+                  <span className="font-medium text-slate-700 dark:text-[#ededed]">
+                    {formatTokens(u.completion - u.thinking)}
+                  </span>
+                  <span>{formatTokens(u.completion)}</span>
+                </Fragment>
               ))}
-              <p className="flex justify-between border-t border-slate-200 pt-0.5 dark:border-[#4a4a4a]">
-                <span>Total generated</span>
-                <span className="font-semibold text-slate-800 dark:text-white">{formatTokens(totalGenerated)}</span>
-              </p>
-              <p className="flex justify-between text-slate-400 dark:text-[#c8c8c8]">
-                <span>Total (incl. prompt)</span>
-                <span>{formatTokens(totalAll)}</span>
-              </p>
+              <span className="col-span-4 border-t border-slate-200 dark:border-[#4a4a4a]" />
+              <span className="text-left font-medium text-slate-600 dark:text-[#e0e0e0]">Total</span>
+              <span className="font-medium text-slate-700 dark:text-[#ededed]">{formatTokens(totalInput)}</span>
+              <span className="font-semibold text-slate-800 dark:text-white">{formatTokens(totalOutput)}</span>
+              <span className="font-medium text-slate-700 dark:text-[#ededed]">{formatTokens(totalOutputIncl)}</span>
             </div>
+            <p className="mt-1 text-[10px] text-slate-400 dark:text-[#b0b0b0]">
+              Out/+think split is approximate (Ollama bundles thinking into output).
+            </p>
           </div>
         )}
 
