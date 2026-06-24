@@ -16,6 +16,8 @@ fallback noted in the project plan if the internal API shifts.
 """
 import asyncio
 import json
+import os
+import sys
 from typing import Any, AsyncGenerator, List, Literal, Mapping, Optional, Sequence, Union
 
 from autogen_core import CancellationToken, FunctionCall
@@ -61,6 +63,15 @@ class StreamingOllamaChatCompletionClient(OllamaChatCompletionClient):
         create_params = self._process_create_args(
             messages, tools, tool_choice, json_output, extra_create_args
         )
+        # Opt-in vision diagnostics: confirm whether image bytes actually reach the
+        # wire (and with what `think` flag) for this inference. Off unless VISION_DEBUG set.
+        if os.environ.get("VISION_DEBUG"):
+            img_count = sum(len(getattr(m, "images", None) or []) for m in create_params.messages)
+            print(
+                f"[VISION_DEBUG] agent={self._agent_name!r} vision={self.model_info['vision']} "
+                f"think={bool(self._enable_thinking)} images_on_wire={img_count}",
+                file=sys.stderr, flush=True,
+            )
         stream_future = asyncio.ensure_future(
             self._client.chat(  # type: ignore[arg-type]
                 messages=create_params.messages,

@@ -7,12 +7,52 @@ const FIELD =
 
 export type ModelCaps = Record<string, { vision: boolean | null; tools: boolean | null }>;
 
-function VisionBadge({ vision }: { vision: boolean | null | undefined }) {
-  if (vision === true)
-    return <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">👁 vision</span>;
-  if (vision === false)
-    return <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-[#454545] dark:text-[#d0d0d0]">no vision</span>;
-  return <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="Capability unknown — verified on send">vision?</span>;
+// Cycle a vision override: auto (undefined) → on → off → auto.
+function nextVision(v: boolean | null | undefined): boolean | undefined {
+  if (v === true) return false;
+  if (v === false) return undefined;
+  return true;
+}
+
+// Clickable vision indicator. Shows the effective state (manual override wins over
+// auto-detected) and lets the user force vision on/off when /api/show mis-reports it.
+function VisionToggle({
+  detected,
+  override,
+  onCycle,
+}: {
+  detected: boolean | null | undefined;
+  override: boolean | null | undefined;
+  onCycle: () => void;
+}) {
+  const manual = override === true || override === false;
+  const effective = manual ? override : detected;
+  let cls: string;
+  let label: string;
+  if (effective === true) {
+    cls = "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300";
+    label = "👁 vision";
+  } else if (effective === false) {
+    cls = "bg-slate-100 text-slate-500 dark:bg-[#454545] dark:text-[#d0d0d0]";
+    label = "no vision";
+  } else {
+    cls = "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300";
+    label = "vision?";
+  }
+  const title = manual
+    ? `Manual override (${override ? "on" : "off"}). Click to cycle: auto → on → off.`
+    : "Auto-detected. Click to override: on → off → auto.";
+  return (
+    <button
+      type="button"
+      onClick={onCycle}
+      title={title}
+      className={`cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-medium ${cls}`}
+    >
+      {label}
+      {manual ? " •" : ""}
+    </button>
+  );
 }
 
 function ToolsBadge({ tools }: { tools: boolean | null | undefined }) {
@@ -36,6 +76,7 @@ export default function AgentRoster({
   onReset,
   onExport,
   onImport,
+  onRefreshCaps,
 }: {
   agents: AgentConfig[];
   models: string[];
@@ -49,6 +90,7 @@ export default function AgentRoster({
   onReset: () => void;
   onExport: () => void;
   onImport: (raw: string) => string | null; // returns an error message, or null on success
+  onRefreshCaps: () => void;
 }) {
   const [importError, setImportError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -59,10 +101,18 @@ export default function AgentRoster({
   function remove(i: number) {
     onChange(agents.filter((_, idx) => idx !== i));
   }
+  function move(i: number, dir: -1 | 1) {
+    const j = i + dir;
+    if (j < 0 || j >= agents.length) return;
+    const next = agents.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  }
   function add() {
     onChange([
       ...agents,
       {
+        id: crypto.randomUUID(),
         name: `Verifier${agents.length + 1}`,
         model: models[0] ?? "",
         system_message: "You independently verify the proposal for correctness and flag any flaws.",
@@ -127,6 +177,13 @@ export default function AgentRoster({
           >
             ⭱ Upload config
           </button>
+          <button
+            onClick={onRefreshCaps}
+            title="Re-query Ollama for each model's vision/tools capability"
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:border-slate-400 dark:border-[#4a4a4a] dark:text-[#ededed]"
+          >
+            ↻ Refresh capabilities
+          </button>
           <input
             ref={fileRef}
             type="file"
@@ -150,7 +207,7 @@ export default function AgentRoster({
 
         <div className="space-y-3">
           {agents.map((a, i) => (
-            <div key={i} className="rounded-xl border border-slate-200 p-3 dark:border-[#4a4a4a]">
+            <div key={a.id ?? i} className="rounded-xl border border-slate-200 p-3 dark:border-[#4a4a4a]">
               <div className="flex gap-2">
                 <div className="flex-1">
                   <input
@@ -170,10 +227,35 @@ export default function AgentRoster({
                     ))}
                   </select>
                 </div>
+                {/* Reorder — sets the round-robin speaking order. */}
+                <div className="flex flex-col justify-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => move(i, -1)}
+                    disabled={i === 0}
+                    title="Move up"
+                    className="rounded border border-slate-300 px-1 text-xs leading-none text-slate-600 hover:border-slate-400 disabled:opacity-30 dark:border-[#4a4a4a] dark:text-[#dcdcdc]"
+                  >
+                    ▲
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => move(i, 1)}
+                    disabled={i === agents.length - 1}
+                    title="Move down"
+                    className="rounded border border-slate-300 px-1 text-xs leading-none text-slate-600 hover:border-slate-400 disabled:opacity-30 dark:border-[#4a4a4a] dark:text-[#dcdcdc]"
+                  >
+                    ▼
+                  </button>
+                </div>
               </div>
 
               <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-[#d0d0d0]">
-                <VisionBadge vision={caps[a.model]?.vision} />
+                <VisionToggle
+                  detected={caps[a.model]?.vision}
+                  override={a.vision}
+                  onCycle={() => update(i, { vision: nextVision(a.vision) })}
+                />
                 <ToolsBadge tools={caps[a.model]?.tools} />
                 {a.is_critic && (
                   <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">

@@ -17,8 +17,13 @@ const POLL_MS = 2000;
 type Usage = Record<string, { prompt: number; completion: number }>;
 
 /** Fill in any missing AgentConfig fields with sensible defaults. */
+function newId(): string {
+  return crypto.randomUUID();
+}
+
 function normalizeAgent(a: Partial<AgentConfig>, defaultNumCtx: number): AgentConfig {
   return {
+    id: a.id ?? newId(),
     name: a.name ?? "Agent",
     model: a.model ?? "",
     system_message: a.system_message ?? "",
@@ -26,6 +31,7 @@ function normalizeAgent(a: Partial<AgentConfig>, defaultNumCtx: number): AgentCo
     num_ctx: a.num_ctx ?? defaultNumCtx,
     is_critic: !!a.is_critic,
     critiques: a.critiques ?? undefined,
+    vision: a.vision ?? undefined,
   };
 }
 
@@ -75,7 +81,9 @@ export default function App() {
   const [roster, setRoster] = useState<AgentConfig[]>(() => {
     try {
       const saved = localStorage.getItem(ROSTER_KEY);
-      return saved ? (JSON.parse(saved) as AgentConfig[]) : [];
+      const list = saved ? (JSON.parse(saved) as AgentConfig[]) : [];
+      // Backfill stable ids for rosters saved before ids existed.
+      return list.map((a) => (a.id ? a : { ...a, id: newId() }));
     } catch {
       return [];
     }
@@ -165,6 +173,18 @@ export default function App() {
 
   function push(item: ChatItem) {
     setItems((prev) => [...prev, item]);
+  }
+
+  // Re-query model capabilities (clears the server-side cache first) so a model
+  // pulled/updated after startup shows the right vision/tools badges.
+  async function refreshCaps() {
+    try {
+      await fetch("/api/models/capabilities/refresh", { method: "POST" });
+      const d = await (await fetch("/api/models/capabilities")).json();
+      setCaps(d.capabilities ?? {});
+    } catch {
+      /* ignore — badges stay as-is */
+    }
   }
 
   // Find/create the agent item being streamed; subsequent deltas append to it.
@@ -408,10 +428,10 @@ export default function App() {
         <div className="mt-auto space-y-1 text-xs text-slate-400 dark:text-[#c8c8c8]">
           <p className="font-medium text-slate-500 dark:text-[#d0d0d0]">Roster</p>
           {roster.map((a, i) => (
-            <p key={i}>
+            <p key={a.id ?? i}>
               {i + 1} · {a.name} <span className="text-slate-300 dark:text-[#c0c0c0]">— {a.model}</span>
               {a.with_research ? " 🔎" : ""}
-              {caps[a.model]?.vision ? " 👁" : ""}
+              {(a.vision ?? caps[a.model]?.vision) ? " 👁" : ""}
               {caps[a.model]?.tools ? " 🔧" : ""}
             </p>
           ))}
@@ -444,6 +464,7 @@ export default function App() {
           onReset={resetSettings}
           onExport={exportConfig}
           onImport={importConfig}
+          onRefreshCaps={refreshCaps}
         />
       )}
     </div>

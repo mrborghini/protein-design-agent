@@ -64,6 +64,8 @@ class AgentConfig(BaseModel):
     num_ctx: int | None = None
     is_critic: bool = False
     critiques: list[str] | None = None
+    # Manual vision override: None ⇒ auto-detect via /api/show; True/False ⇒ force.
+    vision: bool | None = None
 
 
 class ChatRequest(BaseModel):
@@ -185,6 +187,17 @@ async def model_capabilities():
         return {"capabilities": {}, "error": str(e)}
 
 
+@app.post("/api/models/capabilities/refresh")
+async def refresh_capabilities():
+    """Clear the per-model capability cache so the next read re-queries /api/show.
+
+    The cache (`_caps_cache`) otherwise lives for the process lifetime; this lets the
+    UI pick up a model that was pulled/updated after the server started.
+    """
+    _caps_cache.clear()
+    return {"ok": True}
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
@@ -266,29 +279,47 @@ async def _debate(
     try:
         configs = agents_cfg if agents_cfg else DEFAULT_AGENTS
         roster_models = {c["model"] for c in configs}
-        actual_vision = (vision_models or set()) & roster_models
+        auto_vision = (vision_models or set()) & roster_models
 
-        # Decide whether images can be attached. We send them with the (shared)
-        # round-robin seed message; non-vision models simply ignore the image bytes
-        # (Ollama behaviour). We still require at least one vision agent so the image
-        # is actually used, and we flag any agents that will ignore it.
-        build_vision = actual_vision
+        # Resolve which models carry vision. A per-agent `vision` override wins over
+        # auto-detection (None/absent ⇒ auto). Resolved per *model*: if two agents share
+        # one model with conflicting overrides, the model is treated as vision if ANY
+        # agent forces it on. With these flags correct, AutoGen's _get_compatible_context
+        # strips images for non-vision agents on its own, so we no longer force every
+        # client to vision=True (which used to push image bytes into models that can't
+        # handle them).
+        def _agent_vision(c: dict) -> bool:
+            v = c.get("vision")
+            return (c["model"] in auto_vision) if v is None else bool(v)
+
+        effective_vision = {c["model"] for c in configs if _agent_vision(c)}
+        build_vision = effective_vision
+        thinking_models = thinking_models or set()
+
         if images:
-            if not actual_vision:
+            if not effective_vision:
                 await queue.put({
                     "type": "error",
-                    "text": "No vision-capable agent in the roster. Remove the image or add a vision model.",
+                    "text": "No vision-capable agent in the roster. Remove the image, pick a "
+                            "vision model, or toggle an agent's vision override on.",
                 })
                 return
-            ignored = roster_models - actual_vision
+            ignored = roster_models - effective_vision
             if ignored:
                 await queue.put({
                     "type": "status", "stage": "vision",
                     "text": f"{len(ignored)} agent(s) without vision will ignore the image.",
                 })
-            # Mark all clients vision-enabled so AutoGen doesn't reject the shared
-            # image content; only true vision models will actually use it.
-            build_vision = roster_models
+            # Sending think=True alongside an image suppresses image grounding on many
+            # models, so disable thinking for the vision (image-carrying) models on this
+            # debate. Normal (no-image) debates keep their thinking channel.
+            disabled = thinking_models & effective_vision
+            if disabled:
+                thinking_models = thinking_models - effective_vision
+                await queue.put({
+                    "type": "status", "stage": "vision",
+                    "text": f"Thinking disabled for {len(disabled)} vision agent(s) so the image is read correctly.",
+                })
 
         # The Critic gets a clarification tool that can ask one specific agent a
         # direct question. The registry is filled after the roster is built (the

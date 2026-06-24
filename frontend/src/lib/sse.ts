@@ -12,6 +12,8 @@ export type StreamEvent =
   | { type: "done" };
 
 export type AgentConfig = {
+  /** Stable client-only id for React keys + reordering. Stripped before send. */
+  id?: string;
   name: string;
   model: string;
   system_message: string;
@@ -22,6 +24,8 @@ export type AgentConfig = {
   is_critic?: boolean;
   /** Names of agents this critic should focus its critique on. */
   critiques?: string[];
+  /** Manual vision override: undefined = auto-detect, true/false = force on/off. */
+  vision?: boolean | null;
 };
 
 export type ChatConfig = {
@@ -48,7 +52,8 @@ export async function streamChat(
       num_ctx: config.numCtx,
       max_turns: config.maxTurns,
       unlimited: !!config.unlimited,
-      agents: config.agents,
+      // Drop the client-only `id` (used for React keys/reordering) before sending.
+      agents: config.agents.map(({ id: _id, ...a }) => a),
       images: config.images && config.images.length ? config.images : undefined,
     }),
     signal,
