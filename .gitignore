@@ -9,3 +9,9 @@ frontend/dist/
 
 # Backend uploads / artifacts
 backend/uploads/
+
+# Pipeline mode: per-tool venvs (multi-GB), bio-app run outputs, and local papers.
+# Defaults resolve under the repo root (start.sh runs from here) — keep them out of git.
+venvs/
+runs/
+papers/

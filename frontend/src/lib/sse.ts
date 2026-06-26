@@ -8,6 +8,10 @@ export type StreamEvent =
   | { type: "delta"; agent: string; content: string; round?: number }
   | { type: "thinking_delta"; agent: string; content: string }
   | { type: "usage"; agent: string; prompt_tokens: number; completion_tokens: number; thinking_tokens: number }
+  // Pipeline mode events:
+  | { type: "gpu"; stage: string; text: string }
+  | { type: "bioapp"; stage: string; tool: string; label?: string; text: string }
+  | { type: "artifact"; tool: string; kind: string; path: string; [k: string]: unknown }
   | { type: "error"; text: string }
   | { type: "done" };
 
@@ -45,6 +49,68 @@ export type ChatConfig = {
   images?: string[];
 };
 
+/** One role in Pipeline mode. `role` (professor/analyst/operator) keys the backend tool set. */
+export type PipelineAgent = {
+  id?: string;
+  name: string;
+  model: string;
+  role: string;
+  system_message?: string;
+  temperature?: number;
+  num_ctx?: number;
+};
+
+export type PipelineConfig = {
+  numCtx: number;
+  maxMessages: number;
+  agents: PipelineAgent[];
+};
+
+/** Shared text/event-stream parser for a POST that returns SSE. */
+async function readSSE(res: Response, onEvent: (e: StreamEvent) => void): Promise<void> {
+  if (!res.ok || !res.body) throw new Error(`Request failed: ${res.status}`);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+      if (!dataLine) continue;
+      try {
+        onEvent(JSON.parse(dataLine.slice(5).trim()) as StreamEvent);
+      } catch {
+        // ignore malformed frame
+      }
+    }
+  }
+}
+
+export async function streamPipeline(
+  message: string,
+  config: PipelineConfig,
+  onEvent: (e: StreamEvent) => void,
+  signal: AbortSignal
+): Promise<void> {
+  const res = await fetch("/api/pipeline", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      num_ctx: config.numCtx,
+      max_messages: config.maxMessages,
+      // Drop the client-only `id` before sending.
+      agents: config.agents.map(({ id: _id, ...a }) => a),
+    }),
+    signal,
+  });
+  await readSSE(res, onEvent);
+}
+
 export async function streamChat(
   message: string,
   config: ChatConfig,
@@ -65,29 +131,5 @@ export async function streamChat(
     }),
     signal,
   });
-  if (!res.ok || !res.body) {
-    throw new Error(`Request failed: ${res.status}`);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
-      if (!dataLine) continue;
-      try {
-        onEvent(JSON.parse(dataLine.slice(5).trim()) as StreamEvent);
-      } catch {
-        // ignore malformed frame
-      }
-    }
-  }
+  await readSSE(res, onEvent);
 }

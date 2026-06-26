@@ -1,30 +1,34 @@
-import type { ChatItem } from "./Chat";
+import type { ChatItem, Mode } from "./Chat";
 import AgentMessage from "./AgentMessage";
 import ResearchTrace from "./ResearchTrace";
+import { GpuBanner, BioAppCard, ArtifactChip } from "./BioAppCard";
 
 /**
- * A collapsible transcript for one debate (everything the agents produced in
- * response to a single user message). Expanded by default; click to collapse.
+ * A collapsible transcript for one debate/pipeline run (everything the agents
+ * produced in response to a single user message). Expanded by default; click to
+ * collapse. In pipeline mode it also renders GPU swaps, bio-app jobs, and artifacts.
  */
 export default function DebatePanel({
   items,
   consensus,
   closed = false,
+  mode = "debate",
   defaultOpen = true,
 }: {
   items: ChatItem[];
   consensus: boolean;
   closed?: boolean;
+  mode?: Mode;
   defaultOpen?: boolean;
 }) {
   const replies = items.filter((it) => it.kind === "agent").length;
+  const label = mode === "pipeline" ? `Pipeline · ${replies} ${replies === 1 ? "message" : "messages"}`
+    : `Debate · ${replies} ${replies === 1 ? "reply" : "replies"}`;
 
   return (
     <details open={defaultOpen} className="rounded-2xl border border-slate-200 bg-white/40 dark:border-[#4a4a4a] dark:bg-[#3c3c3c]">
       <summary className="flex cursor-pointer select-none items-center justify-between rounded-2xl px-4 py-2 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-[#d0d0d0] dark:hover:bg-[#454545]">
-        <span>
-          Debate · {replies} {replies === 1 ? "reply" : "replies"}
-        </span>
+        <span>{label}</span>
         {consensus && <span className="text-emerald-600 dark:text-emerald-400">consensus ✓</span>}
         {!consensus && closed && (
           <span className="text-amber-600 dark:text-amber-400">closed without consensus</span>
@@ -44,6 +48,10 @@ export default function DebatePanel({
             );
           if (item.kind === "research")
             return <ResearchTrace key={i} query={item.query} sources={item.sources} screenshot={item.screenshot} />;
+          if (item.kind === "gpu") return <GpuBanner key={i} text={item.text} />;
+          if (item.kind === "bioapp")
+            return <BioAppCard key={i} tool={item.tool} stage={item.stage} label={item.label} text={item.text} />;
+          if (item.kind === "artifact") return <ArtifactChip key={i} item={item} />;
           if (item.kind === "error")
             return (
               <div

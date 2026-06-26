@@ -12,7 +12,7 @@ from io import BytesIO
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -25,6 +25,8 @@ from autogen_core import CancellationToken, Image as AGImage
 from autogen_core.tools import FunctionTool
 
 from backend.agents import build_roster, safe_name, DEFAULT_AGENTS, DEFAULT_NUM_CTX, OLLAMA_HOST
+from backend.bioapps.config import WORKDIR
+from backend.pipeline import build_pipeline, DEFAULT_PIPELINE_AGENTS, DONE_TOKEN
 from backend.research import research_sink
 from backend.session import session
 from backend.termination import (
@@ -42,6 +44,10 @@ NUM_CTX_MAX = 262144  # 256K — some models (e.g. long-context Qwen/Llama) supp
 DEFAULT_MAX_TURNS = 20
 MAX_TURNS_MIN = 1
 MAX_TURNS_MAX = 100
+# Pipeline mode: total messages (agent turns + tool summaries) before the hard backstop.
+DEFAULT_MAX_MESSAGES = 60
+MAX_MESSAGES_MIN = 4
+MAX_MESSAGES_MAX = 300
 
 app = FastAPI(title="Multi-Agent Debate")
 
@@ -84,6 +90,23 @@ class ChatRequest(BaseModel):
     images: list[str] | None = None  # base64 (data-URL or raw) images for vision agents
 
 
+class PipelineAgentConfig(BaseModel):
+    """One role in Pipeline mode. `role` (professor/analyst/operator) keys the tool set."""
+    name: str
+    model: str
+    role: str
+    system_message: str = ""
+    num_ctx: int | None = None
+    temperature: float | None = None
+
+
+class PipelineRequest(BaseModel):
+    message: str
+    num_ctx: int | None = None
+    max_messages: int | None = None  # total messages before the hard backstop
+    agents: list[PipelineAgentConfig] | None = None
+
+
 def clamp_num_ctx(n: int | None) -> int:
     """Bound the requested context window; fall back to the configured default."""
     if not n:
@@ -95,6 +118,12 @@ def clamp_max_turns(n: int | None) -> int:
     if not n:
         return DEFAULT_MAX_TURNS
     return max(MAX_TURNS_MIN, min(MAX_TURNS_MAX, n))
+
+
+def clamp_max_messages(n: int | None) -> int:
+    if not n:
+        return DEFAULT_MAX_MESSAGES
+    return max(MAX_MESSAGES_MIN, min(MAX_MESSAGES_MAX, n))
 
 
 # Bounds for the per-agent sampling sliders. Defensive clamping only — values come
@@ -136,6 +165,10 @@ async def health():
         "max_turns_min": MAX_TURNS_MIN,
         "max_turns_max": MAX_TURNS_MAX,
         "default_agents": DEFAULT_AGENTS,
+        "default_max_messages": DEFAULT_MAX_MESSAGES,
+        "max_messages_min": MAX_MESSAGES_MIN,
+        "max_messages_max": MAX_MESSAGES_MAX,
+        "default_pipeline_agents": DEFAULT_PIPELINE_AGENTS,
     }
 
 
@@ -288,6 +321,26 @@ async def _forward(msg, queue: asyncio.Queue, round_no: int | None = None) -> No
         if round_no is not None:
             ev["round"] = round_no
         await queue.put(ev)
+
+
+async def _forward_pipeline(msg, queue: asyncio.Queue) -> None:
+    """Forward a pipeline (SelectorGroupChat) message, stripping the completion token.
+
+    Like `_forward` but for the orchestrated pipeline: streaming chunks become
+    `delta`s and complete agent messages become `message`s with the Professor's
+    `DESIGN_COMPLETE` token removed (it's a control signal, not prose). Tool-call
+    events are ignored here — the bio-app/RAG tools emit their own `bioapp`/
+    `artifact`/`research` events onto the queue from inside the call.
+    """
+    if isinstance(msg, ModelClientStreamingChunkEvent) and msg.source != "user":
+        if msg.content:
+            await queue.put({"type": "delta", "agent": msg.source, "content": msg.content})
+        return
+    if isinstance(msg, TextMessage) and msg.source != "user":
+        text = (msg.content or "").replace(DONE_TOKEN, "").strip()
+        if not text:
+            return
+        await queue.put({"type": "message", "agent": msg.source, "content": text})
 
 
 async def _debate(
@@ -495,6 +548,51 @@ async def _debate(
         await queue.put(_DONE)
 
 
+async def _run_pipeline(
+    message: str,
+    agents_cfg: list[dict] | None,
+    queue: asyncio.Queue,
+    token: CancellationToken,
+    num_ctx: int,
+    max_messages: int,
+    thinking_models: set[str] | None = None,
+    tools_models: set[str] | None = None,
+) -> None:
+    """Run the Professor→Analyst/Operator pipeline, streaming each turn onto `queue`."""
+    try:
+        team, agents = build_pipeline(
+            agents_cfg, num_ctx=num_ctx,
+            thinking_models=thinking_models or set(), tools_models=tools_models or set(),
+            max_messages=max_messages,
+        )
+        await queue.put({"type": "status", "stage": "pipeline",
+                         "text": f"Pipeline started with {len(agents)} roles…"})
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        doc = session.context_block()
+        doc_prefix = f"{doc}\n\n" if doc else ""
+        task_text = (
+            f"Current date (UTC): {today}.\n\n"
+            f"{doc_prefix}User goal: {message}\n\n"
+            "Professor: plan and orchestrate to achieve this goal. Delegate literature lookups to "
+            "the Paper Analyst and concrete tool runs to the Bio-App Operator, interpret each "
+            "result, and finish with a clear summary followed by the completion token."
+        )
+
+        async for msg in team.run_stream(task=task_text, cancellation_token=token):
+            if isinstance(msg, TaskResult):
+                break
+            await _forward_pipeline(msg, queue)
+
+        await queue.put({"type": "status", "stage": "pipeline_done", "text": "Pipeline finished."})
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        await queue.put({"type": "error", "text": str(e)})
+    finally:
+        await queue.put(_DONE)
+
+
 def _record_event(event: dict, thinking: dict[str, str]) -> None:
     """Mirror a streamed event into the shared (server-side) conversation."""
     t = event.get("type")
@@ -518,6 +616,27 @@ def _record_event(event: dict, thinking: dict[str, str]) -> None:
             session.append_item({"kind": "consensus"})
         elif event.get("stage") == "closed":
             session.append_item({"kind": "closed"})
+    elif t == "gpu":
+        # VRAM swap (Pipeline mode). A few per run — record so observers see the pause.
+        session.set_status(event.get("text", ""))
+        session.append_item({"kind": "gpu", "stage": event.get("stage", ""), "text": event.get("text", "")})
+    elif t == "bioapp":
+        # Bio-app job lifecycle. Per-line `log` events are high-volume: surface them
+        # live (status only) but only persist start/done/error so the conversation
+        # snapshot stays compact.
+        session.set_status(event.get("text", ""))
+        if event.get("stage") != "log":
+            session.append_item({
+                "kind": "bioapp", "tool": event.get("tool", ""), "stage": event.get("stage", ""),
+                "label": event.get("label", ""), "text": event.get("text", ""),
+            })
+    elif t == "artifact":
+        # The event's `kind` is the artifact *type* (structure/backbone/sequence/score);
+        # rename to `atype` so it doesn't clobber the item discriminator `kind`.
+        item = {k: v for k, v in event.items() if k not in ("type", "kind")}
+        item["kind"] = "artifact"
+        item["atype"] = event.get("kind", "")
+        session.append_item(item)
     elif t == "usage":
         # One combined per-call event (see streaming_client._emit_usage): prompt/completion/thinking
         # all from the same eval, so thinking ≤ completion and completion is always recorded.
@@ -540,6 +659,39 @@ async def clear_conversation():
         raise HTTPException(status_code=409, detail="A debate is running; stop it first.")
     session.clear_conversation()
     return {"status": "ok"}
+
+
+def _sse_response(queue: asyncio.Queue, token: CancellationToken, task: asyncio.Task) -> StreamingResponse:
+    """Shared SSE responder for both debate and pipeline runs.
+
+    Drains `queue` until the `_DONE` sentinel, mirroring each event into the shared
+    conversation (`_record_event`) and forwarding it to the client. On client
+    disconnect it cancels the in-flight run; either way it clears the busy flag.
+    """
+    async def event_stream():
+        thinking: dict[str, str] = {}
+        try:
+            while True:
+                event = await queue.get()
+                if event is _DONE:
+                    yield "data: {\"type\": \"done\"}\n\n"
+                    break
+                _record_event(event, thinking)  # mirror into the shared conversation
+                yield f"data: {json.dumps(event)}\n\n"
+        except asyncio.CancelledError:
+            # Client disconnected mid-stream — cancel the in-flight run.
+            token.cancel()
+            task.cancel()
+            raise
+        finally:
+            session.busy = False
+            session.set_status("")
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/chat")
@@ -612,30 +764,79 @@ async def chat(req: ChatRequest):
         session.set_status("")
         raise
 
-    async def event_stream():
-        thinking: dict[str, str] = {}
-        try:
-            while True:
-                event = await queue.get()
-                if event is _DONE:
-                    yield "data: {\"type\": \"done\"}\n\n"
-                    break
-                _record_event(event, thinking)  # mirror into the shared conversation
-                yield f"data: {json.dumps(event)}\n\n"
-        except asyncio.CancelledError:
-            # Client disconnected mid-stream — cancel the in-flight debate.
-            token.cancel()
-            task.cancel()
-            raise
-        finally:
-            session.busy = False
-            session.set_status("")
+    return _sse_response(queue, token, task)
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+
+@app.post("/api/pipeline")
+async def pipeline(req: PipelineRequest):
+    """Run Pipeline mode: a Professor orchestrating a Paper Analyst + Bio-App Operator."""
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="Empty message.")
+    if session.busy:
+        raise HTTPException(status_code=409, detail="A run is already in progress.")
+    session.busy = True
+
+    try:
+        queue: asyncio.Queue = asyncio.Queue()
+        token = CancellationToken()
+        num_ctx = clamp_num_ctx(req.num_ctx)
+        max_messages = clamp_max_messages(req.max_messages)
+        agents_cfg = [a.model_dump() for a in req.agents] if req.agents else None
+        for a in agents_cfg or []:
+            a["num_ctx"] = clamp_num_ctx(a.get("num_ctx") or num_ctx)
+
+        configs = agents_cfg or DEFAULT_PIPELINE_AGENTS
+        roster_models = [c["model"] for c in configs]
+
+        # The Analyst and Operator must be tool-capable (they carry RAG / bio-app tools).
+        # Hard-fail up front rather than crash mid-run, mirroring /api/chat's gate.
+        tools_models = await asyncio.to_thread(_tools_models_sync, roster_models)
+        offenders = [
+            (c["name"], c["model"]) for c in configs
+            if c.get("role") in ("analyst", "operator") and c["model"] not in tools_models
+        ]
+        if offenders:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The Paper Analyst and Bio-App Operator need tool calling but their model lacks "
+                    "the Ollama `tools` capability — pick a tools-capable model: "
+                    + ", ".join(f"{n} ({m})" for n, m in offenders)
+                ),
+            )
+        thinking_models = await asyncio.to_thread(_thinking_models_sync, roster_models)
+
+        session.append_item({"kind": "user", "text": req.message})
+        session.set_status("Starting pipeline…")
+
+        research_sink.set(queue)
+        task = asyncio.create_task(
+            _run_pipeline(
+                req.message, agents_cfg, queue, token, num_ctx, max_messages,
+                thinking_models, tools_models,
+            )
+        )
+    except Exception:
+        session.busy = False
+        session.set_status("")
+        raise
+
+    return _sse_response(queue, token, task)
+
+
+@app.get("/api/artifact/{path:path}")
+async def artifact(path: str):
+    """Download a bio-app artifact (PDB/FASTA/score) produced under WORKDIR.
+
+    Guards against path traversal: the resolved file must live inside WORKDIR.
+    """
+    base = WORKDIR.resolve()
+    target = (base / path).resolve()
+    if base != target and base not in target.parents:
+        raise HTTPException(status_code=400, detail="Invalid artifact path.")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    return FileResponse(str(target), filename=target.name)
 
 
 # Serve the built SPA if it exists (production / static-serve mode).

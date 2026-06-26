@@ -1,17 +1,20 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import Chat, { ChatItem } from "./components/Chat";
+import Chat, { ChatItem, Mode } from "./components/Chat";
 import PdfUpload from "./components/PdfUpload";
 import ContextControl from "./components/ContextControl";
 import AgentRoster, { ModelCaps } from "./components/AgentRoster";
-import { streamChat, AgentConfig } from "./lib/sse";
+import { streamChat, streamPipeline, AgentConfig, PipelineAgent } from "./lib/sse";
 import { useDarkMode } from "./lib/theme";
 import { downloadJSON, downloadText, formatTokens } from "./lib/download";
 
-const FALLBACK = { numCtx: 32768, ctxMin: 512, ctxMax: 262144, maxTurns: 20, turnsMin: 1, turnsMax: 100 };
+const FALLBACK = { numCtx: 32768, ctxMin: 512, ctxMax: 262144, maxTurns: 20, turnsMin: 1, turnsMax: 100, maxMessages: 60, msgMin: 4, msgMax: 300 };
 const ROSTER_KEY = "pda-roster";
 const TURNS_KEY = "pda-maxturns";
 const CTX_KEY = "pda-numctx";
 const NOLIMIT_KEY = "pda-nolimit";
+const MODE_KEY = "pda-mode";
+const PIPELINE_KEY = "pda-pipeline-roster";
+const MSGS_KEY = "pda-maxmessages";
 const POLL_MS = 2000;
 // Rough chars-per-token heuristic for the live (in-flight) usage estimate, replaced by
 // Ollama's exact eval_count when the turn's `usage` event arrives.
@@ -54,6 +57,10 @@ function conversationToMarkdown(items: ChatItem[]): string {
       lines.push(`> 🔎 Research: ${it.query}\n>\n` + it.sources.map((s) => `> - [${s.title || s.url}](${s.url})`).join("\n") + "\n");
     else if (it.kind === "consensus") lines.push(`_Consensus reached ✓_\n`);
     else if (it.kind === "closed") lines.push(`_Debate closed by the Critic — no consensus_\n`);
+    else if (it.kind === "gpu") lines.push(`> 🎛️ ${it.text}\n`);
+    else if (it.kind === "bioapp") lines.push(`> 🧪 ${it.label || it.tool}: ${it.text}\n`);
+    else if (it.kind === "artifact")
+      lines.push(`> 📦 ${it.atype || "artifact"} (${it.tool}): ${it.path}\n`);
     else if (it.kind === "error") lines.push(`> ⚠️ ${it.text}\n`);
   }
   return lines.join("\n");
@@ -78,6 +85,20 @@ export default function App() {
   const [maxTurns, setMaxTurns] = useState(() => Number(localStorage.getItem(TURNS_KEY)) || FALLBACK.maxTurns);
   const [noLimit, setNoLimit] = useState(() => localStorage.getItem(NOLIMIT_KEY) === "1");
   const [turnsBounds, setTurnsBounds] = useState({ min: FALLBACK.turnsMin, max: FALLBACK.turnsMax });
+
+  // Mode: the original consensus "debate" or the orchestrated protein-design "pipeline".
+  const [mode, setMode] = useState<Mode>(() => (localStorage.getItem(MODE_KEY) as Mode) || "debate");
+  const [maxMessages, setMaxMessages] = useState(() => Number(localStorage.getItem(MSGS_KEY)) || FALLBACK.maxMessages);
+  const [msgBounds, setMsgBounds] = useState({ min: FALLBACK.msgMin, max: FALLBACK.msgMax });
+  const [pipelineRoster, setPipelineRoster] = useState<PipelineAgent[]>(() => {
+    try {
+      const saved = localStorage.getItem(PIPELINE_KEY);
+      const list = saved ? (JSON.parse(saved) as PipelineAgent[]) : [];
+      return list.map((a) => (a.id ? a : { ...a, id: newId() }));
+    } catch {
+      return [];
+    }
+  });
   // True only while THIS client is actively streaming a debate it started; used to
   // avoid clobbering the live token stream with the (finalized-only) poll snapshot.
   const localStreamingRef = useRef(false);
@@ -110,6 +131,7 @@ export default function App() {
       .then((h) => {
         if (h.num_ctx_min && h.num_ctx_max) setCtxBounds({ min: h.num_ctx_min, max: h.num_ctx_max });
         if (h.max_turns_min && h.max_turns_max) setTurnsBounds({ min: h.max_turns_min, max: h.max_turns_max });
+        if (h.max_messages_min && h.max_messages_max) setMsgBounds({ min: h.max_messages_min, max: h.max_messages_max });
         const seedCtx = Number(localStorage.getItem(CTX_KEY)) || h.default_num_ctx || FALLBACK.numCtx;
         const defs: AgentConfig[] = (h.default_agents ?? []).map((a: Partial<AgentConfig>) =>
           normalizeAgent(a, seedCtx)
@@ -117,6 +139,23 @@ export default function App() {
         setDefaults(defs);
         // Seed the roster from defaults only if the user has none saved.
         setRoster((cur) => (cur.length ? cur : defs));
+        // Seed the pipeline roster (Professor/Analyst/Operator) from backend defaults if unsaved.
+        const pdefs: PipelineAgent[] = (h.default_pipeline_agents ?? []).map((a: Partial<PipelineAgent>) => ({
+          id: newId(),
+          name: a.name ?? "Agent",
+          model: a.model ?? "",
+          role: a.role ?? "",
+          system_message: a.system_message ?? "",
+          temperature: a.temperature,
+        }));
+        // Seed from defaults if empty; otherwise backfill any role added since the saved
+        // roster (e.g. the Critic) so existing users get its model dropdown.
+        setPipelineRoster((cur) => {
+          if (!cur.length) return pdefs;
+          const have = new Set(cur.map((a) => a.role));
+          const missing = pdefs.filter((d) => !have.has(d.role));
+          return missing.length ? [...cur, ...missing] : cur;
+        });
       })
       .catch(() => {});
     fetch("/api/models")
@@ -146,6 +185,15 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(NOLIMIT_KEY, noLimit ? "1" : "0");
   }, [noLimit]);
+  useEffect(() => {
+    localStorage.setItem(MODE_KEY, mode);
+  }, [mode]);
+  useEffect(() => {
+    localStorage.setItem(MSGS_KEY, String(maxMessages));
+  }, [maxMessages]);
+  useEffect(() => {
+    if (pipelineRoster.length) localStorage.setItem(PIPELINE_KEY, JSON.stringify(pipelineRoster));
+  }, [pipelineRoster]);
 
   // Poll the shared conversation so every session sees the one chat. Skip applying
   // the snapshot while THIS client is streaming its own debate (it renders live).
@@ -296,57 +344,71 @@ export default function App() {
     // This client owns the live stream; suppress the poll snapshot meanwhile.
     localStreamingRef.current = true;
     setStreaming(true);
-    push({ kind: "user", text, images: images.length ? images : undefined });
+    // Images are a debate-only (vision) feature; the pipeline ignores them.
+    const sendImages = mode === "pipeline" ? [] : images;
+    push({ kind: "user", text, images: sendImages.length ? sendImages : undefined });
     setBusy(true);
     setStatus("Starting…");
     streamRef.current = null;
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // Shared event handler for both debate and pipeline streams.
+    const onEvent = (e: Parameters<Parameters<typeof streamChat>[2]>[0]) => {
+      if (e.type === "status") {
+        setStatus(e.text);
+        if (e.stage === "consensus") push({ kind: "consensus" });
+        else if (e.stage === "closed") push({ kind: "closed" });
+      } else if (e.type === "research")
+        push({ kind: "research", query: e.query, sources: e.sources, screenshot: e.screenshot_b64 });
+      else if (e.type === "delta") {
+        appendStream(ensureStreamItem(e.agent, e.round), "content", e.content);
+        bumpLive(e.agent, "answerChars", e.content.length);
+      } else if (e.type === "thinking_delta") {
+        appendStream(ensureStreamItem(e.agent), "thinking", e.content);
+        bumpLive(e.agent, "thinkingChars", e.content.length);
+      }
+      else if (e.type === "message") {
+        // Finalize the streamed item with the authoritative (token-stripped) text + round.
+        const cur = streamRef.current;
+        if (cur && cur.agent === e.agent) {
+          const id = cur.id;
+          setItems((prev) =>
+            prev.map((it) =>
+              it.kind === "agent" && it.id === id
+                ? { ...it, content: e.content, round: e.round ?? it.round }
+                : it
+            )
+          );
+          streamRef.current = null;
+        } else {
+          push({ kind: "agent", agent: e.agent, content: e.content, round: e.round });
+        }
+      } else if (e.type === "usage") {
+        // One combined per-call event (prompt/completion/thinking from the same eval).
+        // Exact counts arrived — drop the live estimate so we don't double-count.
+        addUsage(e.agent, e.prompt_tokens, e.completion_tokens);
+        addThinkingUsage(e.agent, e.thinking_tokens);
+        setLive((prev) => (prev && prev.agent === e.agent ? null : prev));
+      } else if (e.type === "gpu") {
+        setStatus(e.text);
+        push({ kind: "gpu", stage: e.stage, text: e.text });
+        streamRef.current = null; // the LLM is being swapped out; next turn starts a fresh bubble
+      } else if (e.type === "bioapp") {
+        setStatus(e.text);
+        if (e.stage !== "log") push({ kind: "bioapp", tool: e.tool, stage: e.stage, label: e.label, text: e.text });
+      } else if (e.type === "artifact") {
+        const { type: _type, kind, ...rest } = e;
+        push({ kind: "artifact", atype: String(kind), ...rest } as ChatItem);
+      } else if (e.type === "error") push({ kind: "error", text: e.text });
+    };
+
     try {
-      await streamChat(
-        text,
-        { numCtx, maxTurns, unlimited: noLimit, agents: roster, images },
-        (e) => {
-          if (e.type === "status") {
-            setStatus(e.text);
-            if (e.stage === "consensus") push({ kind: "consensus" });
-            else if (e.stage === "closed") push({ kind: "closed" });
-          } else if (e.type === "research")
-            push({ kind: "research", query: e.query, sources: e.sources, screenshot: e.screenshot_b64 });
-          else if (e.type === "delta") {
-            appendStream(ensureStreamItem(e.agent, e.round), "content", e.content);
-            bumpLive(e.agent, "answerChars", e.content.length);
-          } else if (e.type === "thinking_delta") {
-            appendStream(ensureStreamItem(e.agent), "thinking", e.content);
-            bumpLive(e.agent, "thinkingChars", e.content.length);
-          }
-          else if (e.type === "message") {
-            // Finalize the streamed item with the authoritative (consensus-stripped) text + round.
-            const cur = streamRef.current;
-            if (cur && cur.agent === e.agent) {
-              const id = cur.id;
-              setItems((prev) =>
-                prev.map((it) =>
-                  it.kind === "agent" && it.id === id
-                    ? { ...it, content: e.content, round: e.round ?? it.round }
-                    : it
-                )
-              );
-              streamRef.current = null;
-            } else {
-              push({ kind: "agent", agent: e.agent, content: e.content, round: e.round });
-            }
-          } else if (e.type === "usage") {
-            // One combined per-call event (prompt/completion/thinking from the same eval).
-            // Exact counts arrived — drop the live estimate so we don't double-count.
-            addUsage(e.agent, e.prompt_tokens, e.completion_tokens);
-            addThinkingUsage(e.agent, e.thinking_tokens);
-            setLive((prev) => (prev && prev.agent === e.agent ? null : prev));
-          } else if (e.type === "error") push({ kind: "error", text: e.text });
-        },
-        controller.signal
-      );
+      if (mode === "pipeline") {
+        await streamPipeline(text, { numCtx, maxMessages, agents: pipelineRoster }, onEvent, controller.signal);
+      } else {
+        await streamChat(text, { numCtx, maxTurns, unlimited: noLimit, agents: roster, images }, onEvent, controller.signal);
+      }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         // Stopped by the user — backend cancels the debate.
@@ -390,7 +452,9 @@ export default function App() {
       <aside className="flex w-72 flex-col gap-4 overflow-y-auto border-r border-slate-200 bg-white px-4 py-6 dark:border-[#4a4a4a] dark:bg-[#3c3c3c]">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-lg font-semibold text-slate-800 dark:text-white">Multi-Agent Debate</h1>
+            <h1 className="text-lg font-semibold text-slate-800 dark:text-white">
+              {mode === "pipeline" ? "Protein-Design Pipeline" : "Multi-Agent Debate"}
+            </h1>
             <p className="mt-1 text-xs text-slate-400 dark:text-[#c8c8c8]">Local · Ollama · Playwright</p>
           </div>
           <button
@@ -400,6 +464,24 @@ export default function App() {
           >
             {dark ? "☀️" : "🌙"}
           </button>
+        </div>
+
+        {/* Mode switch: consensus debate vs orchestrated protein-design pipeline. */}
+        <div className="flex rounded-lg border border-slate-300 p-0.5 text-xs dark:border-[#4a4a4a]">
+          {(["debate", "pipeline"] as Mode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              disabled={busy}
+              className={`flex-1 rounded-md px-2 py-1.5 font-medium capitalize transition disabled:opacity-50 ${
+                mode === m
+                  ? "bg-slate-800 text-white dark:bg-sky-700"
+                  : "text-slate-600 hover:bg-slate-100 dark:text-[#dcdcdc] dark:hover:bg-[#454545]"
+              }`}
+            >
+              {m}
+            </button>
+          ))}
         </div>
 
         <PdfUpload onLoaded={(info) => setPdfName(info.name)} />
@@ -412,35 +494,101 @@ export default function App() {
           onChange={setNumCtx}
         />
 
-        <div>
-          <label className="text-xs font-medium text-slate-500 dark:text-[#d0d0d0]">Max debate turns</label>
-          <input
-            type="number"
-            value={maxTurns}
-            min={turnsBounds.min}
-            max={turnsBounds.max}
-            disabled={busy || noLimit}
-            onChange={(e) => setMaxTurns(Number(e.target.value))}
-            onBlur={(e) =>
-              setMaxTurns(Math.max(turnsBounds.min, Math.min(turnsBounds.max, Number(e.target.value) || turnsBounds.min)))
-            }
-            className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 disabled:opacity-50 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white"
-          />
-          <label className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-[#d0d0d0]">
-            <input type="checkbox" checked={noLimit} disabled={busy} onChange={(e) => setNoLimit(e.target.checked)} />
-            No limit (run until consensus or deadlock)
-          </label>
-          <p className="mt-1 text-[11px] text-slate-400 dark:text-[#c8c8c8]">
-            1 turn = every agent speaks once. If they never agree, the Critic closes with why.
-          </p>
-        </div>
+        {mode === "debate" && (
+          <>
+            <div>
+              <label className="text-xs font-medium text-slate-500 dark:text-[#d0d0d0]">Max debate turns</label>
+              <input
+                type="number"
+                value={maxTurns}
+                min={turnsBounds.min}
+                max={turnsBounds.max}
+                disabled={busy || noLimit}
+                onChange={(e) => setMaxTurns(Number(e.target.value))}
+                onBlur={(e) =>
+                  setMaxTurns(Math.max(turnsBounds.min, Math.min(turnsBounds.max, Number(e.target.value) || turnsBounds.min)))
+                }
+                className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 disabled:opacity-50 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white"
+              />
+              <label className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500 dark:text-[#d0d0d0]">
+                <input type="checkbox" checked={noLimit} disabled={busy} onChange={(e) => setNoLimit(e.target.checked)} />
+                No limit (run until consensus or deadlock)
+              </label>
+              <p className="mt-1 text-[11px] text-slate-400 dark:text-[#c8c8c8]">
+                1 turn = every agent speaks once. If they never agree, the Critic closes with why.
+              </p>
+            </div>
 
-        <button
-          onClick={() => setShowRoster(true)}
-          className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:border-slate-400 dark:border-[#4a4a4a] dark:text-[#ededed]"
-        >
-          Configure agents ({roster.length})
-        </button>
+            <button
+              onClick={() => setShowRoster(true)}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:border-slate-400 dark:border-[#4a4a4a] dark:text-[#ededed]"
+            >
+              Configure agents ({roster.length})
+            </button>
+          </>
+        )}
+
+        {mode === "pipeline" && (
+          <>
+            <div>
+              <label className="text-xs font-medium text-slate-500 dark:text-[#d0d0d0]">Max pipeline messages</label>
+              <input
+                type="number"
+                value={maxMessages}
+                min={msgBounds.min}
+                max={msgBounds.max}
+                disabled={busy}
+                onChange={(e) => setMaxMessages(Number(e.target.value))}
+                onBlur={(e) =>
+                  setMaxMessages(Math.max(msgBounds.min, Math.min(msgBounds.max, Number(e.target.value) || FALLBACK.maxMessages)))
+                }
+                className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 disabled:opacity-50 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white"
+              />
+              <p className="mt-1 text-[11px] text-slate-400 dark:text-[#c8c8c8]">
+                Hard cap on total messages (agent turns + tool runs) before the Professor must conclude.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500 dark:text-[#d0d0d0]">Roles &amp; models</label>
+              {pipelineRoster.map((a) => {
+                const needsTools = a.role === "analyst" || a.role === "operator";
+                const lacksTools = needsTools && a.model && caps[a.model]?.tools === false;
+                return (
+                  <div key={a.id ?? a.role}>
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-[#d0d0d0]">
+                      <span>{a.name}</span>
+                      {needsTools && <span title="Needs the Ollama tools capability">🔧</span>}
+                    </div>
+                    <select
+                      value={a.model}
+                      disabled={busy}
+                      onChange={(e) =>
+                        setPipelineRoster((prev) =>
+                          prev.map((p) => (p.id === a.id ? { ...p, model: e.target.value } : p))
+                        )
+                      }
+                      className="mt-0.5 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 disabled:opacity-50 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white"
+                    >
+                      {!models.includes(a.model) && a.model && <option value={a.model}>{a.model} (not pulled)</option>}
+                      {models.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                    {lacksTools && (
+                      <p className="mt-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                        This model lacks tool calling — pick a tools-capable model.
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+              {modelsError && <p className="text-[11px] text-red-500">{modelsError}</p>}
+            </div>
+          </>
+        )}
 
         <div className="flex gap-2">
           <button
@@ -506,14 +654,22 @@ export default function App() {
 
         <div className="mt-auto space-y-1 text-xs text-slate-400 dark:text-[#c8c8c8]">
           <p className="font-medium text-slate-500 dark:text-[#d0d0d0]">Roster</p>
-          {roster.map((a, i) => (
-            <p key={a.id ?? i}>
-              {i + 1} · {a.name} <span className="text-slate-300 dark:text-[#c0c0c0]">— {a.model}</span>
-              {a.with_research ? " 🔎" : ""}
-              {(a.vision ?? caps[a.model]?.vision) ? " 👁" : ""}
-              {caps[a.model]?.tools ? " 🔧" : ""}
-            </p>
-          ))}
+          {mode === "debate" &&
+            roster.map((a, i) => (
+              <p key={a.id ?? i}>
+                {i + 1} · {a.name} <span className="text-slate-300 dark:text-[#c0c0c0]">— {a.model}</span>
+                {a.with_research ? " 🔎" : ""}
+                {(a.vision ?? caps[a.model]?.vision) ? " 👁" : ""}
+                {caps[a.model]?.tools ? " 🔧" : ""}
+              </p>
+            ))}
+          {mode === "pipeline" &&
+            pipelineRoster.map((a, i) => (
+              <p key={a.id ?? i}>
+                {i + 1} · {a.name} <span className="text-slate-300 dark:text-[#c0c0c0]">— {a.model}</span>
+                {a.role !== "professor" && caps[a.model]?.tools ? " 🔧" : ""}
+              </p>
+            ))}
           {pdfName && <p className="pt-2 text-emerald-600 dark:text-emerald-400">Grounded on {pdfName}</p>}
         </div>
       </aside>
@@ -524,6 +680,7 @@ export default function App() {
           busy={busy}
           status={status}
           streaming={streaming}
+          mode={mode}
           onSend={handleSend}
           onStop={stopDebate}
         />

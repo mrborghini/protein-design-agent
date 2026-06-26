@@ -8,7 +8,13 @@ export type ChatItem =
   | { kind: "research"; query: string; sources: { title: string; url: string }[]; screenshot: string }
   | { kind: "consensus" }
   | { kind: "closed" }
+  // Pipeline mode items:
+  | { kind: "gpu"; stage: string; text: string }
+  | { kind: "bioapp"; tool: string; stage: string; label?: string; text: string }
+  | { kind: "artifact"; tool: string; atype?: string; path: string; [k: string]: unknown }
   | { kind: "error"; text: string };
+
+export type Mode = "debate" | "pipeline";
 
 type Group = {
   user: { text: string; images?: string[] } | null;
@@ -43,6 +49,7 @@ export default function Chat({
   busy,
   status,
   streaming = false,
+  mode = "debate",
   onSend,
   onStop,
 }: {
@@ -50,6 +57,7 @@ export default function Chat({
   busy: boolean;
   status: string;
   streaming?: boolean;
+  mode?: Mode;
   onSend: (text: string, images: string[]) => void;
   onStop?: () => void;
 }) {
@@ -102,8 +110,17 @@ export default function Chat({
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 space-y-3 overflow-y-auto px-6 py-6">
         {items.length === 0 && (
           <div className="mt-20 text-center text-sm text-slate-400 dark:text-[#c8c8c8]">
-            Ask the agents anything. They'll discuss it (browsing the web if needed)
-            and debate until they reach a consensus.
+            {mode === "pipeline" ? (
+              <>
+                Describe a protein-design goal. The Professor orchestrates a Paper Analyst and a
+                Bio-App Operator (Boltz-2, RFdiffusion, ProteinMPNN, PyRosetta) to work toward it.
+              </>
+            ) : (
+              <>
+                Ask the agents anything. They'll discuss it (browsing the web if needed)
+                and debate until they reach a consensus.
+              </>
+            )}
           </div>
         )}
 
@@ -132,6 +149,7 @@ export default function Chat({
                 items={g.items}
                 consensus={g.consensus}
                 closed={g.closed}
+                mode={mode}
                 defaultOpen={gi === groups.length - 1}
               />
             )}
@@ -195,7 +213,7 @@ export default function Chat({
               }
             }}
             rows={1}
-            placeholder="Ask the agents anything…"
+            placeholder={mode === "pipeline" ? "Describe a protein-design goal…" : "Ask the agents anything…"}
             className="max-h-40 flex-1 resize-none rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white dark:placeholder:text-slate-500"
           />
           {streaming ? (

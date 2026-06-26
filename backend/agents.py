@@ -189,13 +189,17 @@ def build_agent(
     clarification_tool=None,
     tools_capable: bool = True,
     sampling: dict | None = None,
+    extra_tools: list | None = None,
 ) -> AssistantAgent:
-    """Generic agent factory used by both the CLI and the consensus debate.
+    """Generic agent factory used by the CLI, the consensus debate, and the pipeline.
 
     `tools_capable` reflects whether the model advertises the Ollama `tools`
     capability. When False, no tools are attached (and the function-calling
     flag in ModelInfo is False) so the agent can't be told to call — or
     hallucinate — a tool the model can't actually invoke.
+
+    `extra_tools` lets a caller attach arbitrary FunctionTools (e.g. the Pipeline
+    mode's bio-app / RAG tools); they are only wired when `tools_capable` is True.
     """
     sys = system_message + critique_directive(critiques)
     give_clarify = tools_capable and is_critic and clarification_tool is not None
@@ -209,6 +213,8 @@ def build_agent(
         tools.append(web_research_tool)
     if give_clarify:
         tools.append(clarification_tool)
+    if tools_capable and extra_tools:
+        tools.extend(extra_tools)
 
     return AssistantAgent(
         name=safe,
