@@ -6,6 +6,7 @@ import AgentRoster, { ModelCaps } from "./components/AgentRoster";
 import { streamChat, streamPipeline, AgentConfig, PipelineAgent } from "./lib/sse";
 import { useDarkMode } from "./lib/theme";
 import { downloadJSON, downloadText, formatTokens } from "./lib/download";
+import { newId } from "./lib/id";
 
 const FALLBACK = { numCtx: 32768, ctxMin: 512, ctxMax: 262144, maxTurns: 20, turnsMin: 1, turnsMax: 100, maxMessages: 60, msgMin: 4, msgMax: 300 };
 const ROSTER_KEY = "pda-roster";
@@ -25,10 +26,6 @@ const CHARS_PER_TOKEN = 4;
 type Usage = Record<string, { prompt: number; completion: number; thinking: number }>;
 
 /** Fill in any missing AgentConfig fields with sensible defaults. */
-function newId(): string {
-  return crypto.randomUUID();
-}
-
 function normalizeAgent(a: Partial<AgentConfig>, defaultNumCtx: number): AgentConfig {
   return {
     id: a.id ?? newId(),

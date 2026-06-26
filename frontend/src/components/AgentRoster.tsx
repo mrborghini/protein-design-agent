@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { AgentConfig } from "../lib/sse";
 import { formatCtx } from "../lib/download";
+import { newId } from "../lib/id";
 
 const FIELD =
   "w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm outline-none focus:border-slate-500 dark:border-[#4a4a4a] dark:bg-[#3c3c3c] dark:text-white";
@@ -178,7 +179,7 @@ export default function AgentRoster({
     onChange([
       ...agents,
       {
-        id: crypto.randomUUID(),
+        id: newId(),
         name: `Verifier${agents.length + 1}`,
         model: models[0] ?? "",
         system_message: "You independently verify the proposal for correctness and flag any flaws.",
